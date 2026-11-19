@@ -36,12 +36,6 @@ export function PengurusLoginPage({
     }
   };
 
-  const handleQuickFill = (demoUser: string, demoPass: string) => {
-    setUsername(demoUser);
-    setPassword(demoPass);
-    setError(null);
-  };
-
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-slate-900 flex flex-col">
       <header className="bg-white border-b border-slate-200">
@@ -178,39 +172,6 @@ export function PengurusLoginPage({
                 <span>{submitting ? 'Memverifikasi...' : 'Masuk ke Dashboard'}</span>
               </button>
             </form>
-
-            {/* Helpful Initial Access Box */}
-            <div className="pt-4 border-t border-slate-100 space-y-2.5">
-              <div className="text-xs font-semibold text-slate-700">
-                Akses Awal Terdaftar
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleQuickFill('superadmin', 'superadmin123')}
-                  className="p-2.5 text-left rounded-lg border border-slate-200 bg-slate-50 hover:bg-emerald-50 hover:border-emerald-200 transition-colors"
-                >
-                  <div className="text-xs font-semibold text-slate-900">Superadmin</div>
-                  <div className="text-[11px] font-mono text-slate-600 mt-0.5">
-                    superadmin / superadmin123
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleQuickFill('pengurus1', 'pengurus123')}
-                  className="p-2.5 text-left rounded-lg border border-slate-200 bg-slate-50 hover:bg-emerald-50 hover:border-emerald-200 transition-colors"
-                >
-                  <div className="text-xs font-semibold text-slate-900">Pengurus RT</div>
-                  <div className="text-[11px] font-mono text-slate-600 mt-0.5">
-                    pengurus1 / pengurus123
-                  </div>
-                </button>
-              </div>
-              <p className="text-[11px] text-slate-500">
-                Klik salah satu kartu di atas untuk mengisi otomatis, atau masuk dengan akun pengurus
-                yang telah dibuat Superadmin.
-              </p>
-            </div>
           </div>
         </div>
       </main>
