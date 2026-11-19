@@ -35,6 +35,37 @@ const EMPTY_STATE: RtSnapshotState = {
   notifications: [],
 };
 
+const READ_NOTIFICATIONS_KEY = 'portal_warga_read_notifications';
+
+function loadReadNotificationIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(READ_NOTIFICATIONS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? new Set(parsed.filter((id): id is string => typeof id === 'string'))
+      : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function persistReadNotificationIds(ids: Set<string>): void {
+  try {
+    const list = Array.from(ids).slice(-200);
+    localStorage.setItem(READ_NOTIFICATIONS_KEY, JSON.stringify(list));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function applyLocalReadState(
+  notifications: NotificationItem[],
+  readIds: Set<string>
+): NotificationItem[] {
+  return notifications.map((n) => (readIds.has(n.id) ? { ...n, read: true } : n));
+}
+
 function mergeById<T extends { id: string }>(list: T[], incoming: T, prepend = true): T[] {
   const exists = list.some((item) => item.id === incoming.id);
   if (exists) {
@@ -61,6 +92,7 @@ export function useRtRealtime() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
+  const readIdsRef = useRef<Set<string>>(loadReadNotificationIds());
 
   const pushToast = useCallback((notification: NotificationItem) => {
     setToasts((prev) => {
@@ -99,7 +131,13 @@ export function useRtRealtime() {
       }
       const data = (await res.json()) as RtSnapshotState;
       if (mountedRef.current) {
-        setState(data);
+        setState({
+          ...data,
+          notifications: applyLocalReadState(
+            Array.isArray(data.notifications) ? data.notifications : [],
+            readIdsRef.current
+          ),
+        });
         setLoading(false);
         setError(null);
       }
@@ -121,6 +159,10 @@ export function useRtRealtime() {
             siteSettings: event.payload.siteSettings || EMPTY_STATE.siteSettings,
             hero: event.payload.hero || EMPTY_STATE.hero,
             news: Array.isArray(event.payload.news) ? event.payload.news : [],
+            notifications: applyLocalReadState(
+              Array.isArray(event.payload.notifications) ? event.payload.notifications : [],
+              readIdsRef.current
+            ),
           });
           setLoading(false);
           setError(null);
@@ -326,6 +368,10 @@ export function useRtRealtime() {
               siteSettings: nextRow.data.siteSettings || EMPTY_STATE.siteSettings,
               hero: nextRow.data.hero || EMPTY_STATE.hero,
               news: Array.isArray(nextRow.data.news) ? nextRow.data.news : [],
+              notifications: applyLocalReadState(
+                Array.isArray(nextRow.data.notifications) ? nextRow.data.notifications : [],
+                readIdsRef.current
+              ),
             };
             const prevIds = latestNotifIdsRef.current;
             const newNotif = (incoming.notifications || []).find(
@@ -425,29 +471,31 @@ export function useRtRealtime() {
     };
   }, [applyEvent, fetchInitialState, pushToast]);
 
-  const markNotificationRead = useCallback(async (id: string) => {
+  const markNotificationRead = useCallback((id: string) => {
+    const nextRead = new Set(readIdsRef.current);
+    nextRead.add(id);
+    readIdsRef.current = nextRead;
+    persistReadNotificationIds(nextRead);
+
     setState((prev) => ({
       ...prev,
       notifications: prev.notifications.map((n) =>
         n.id === id ? { ...n, read: true } : n
       ),
     }));
-    await fetch('/api/notifications/read', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
-    });
   }, []);
 
-  const markAllNotificationsRead = useCallback(async () => {
-    setState((prev) => ({
-      ...prev,
-      notifications: prev.notifications.map((n) => ({ ...n, read: true })),
-    }));
-    await fetch('/api/notifications/read', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ all: true }),
+  const markAllNotificationsRead = useCallback(() => {
+    setState((prev) => {
+      const nextRead = new Set(readIdsRef.current);
+      prev.notifications.forEach((n) => nextRead.add(n.id));
+      readIdsRef.current = nextRead;
+      persistReadNotificationIds(nextRead);
+
+      return {
+        ...prev,
+        notifications: prev.notifications.map((n) => ({ ...n, read: true })),
+      };
     });
   }, []);
 

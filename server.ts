@@ -2684,6 +2684,15 @@ async function startServer() {
   });
 
   if (!isProd) {
+    app.get('/Tutorial_Vibe_Coding_AI_Studio.doc', (_req, res) => {
+      const docPath = path.join(__dirname, 'Tutorial_Vibe_Coding_AI_Studio.doc');
+      if (fs.existsSync(docPath)) {
+        res.download(docPath, 'Tutorial_Vibe_Coding_AI_Studio.doc');
+        return;
+      }
+      res.status(404).end();
+    });
+
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
