@@ -4,6 +4,14 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/api",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index"
+    },
+    {
       "source": "/favicon.ico",
       "destination": "/assets/aistudio/500309821_1300971965363211_2221899409798109426_n__1__55125c15.png"
     },

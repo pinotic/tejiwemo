@@ -36,6 +36,12 @@ create policy "Public read rt_app_state"
 -- Catatan: rt_auth_users sengaja TIDAK diberi policy untuk anon/authenticated
 -- sehingga hanya backend dengan SUPABASE_SERVICE_ROLE_KEY yang bisa membaca/mengubah akun & password.
 
+-- 3b. Berikan hak akses tabel secara eksplisit (wajib pada proyek Supabase baru)
+grant usage on schema public to anon, authenticated, service_role;
+grant select on table public.rt_app_state to anon, authenticated;
+grant all privileges on table public.rt_app_state to service_role;
+grant all privileges on table public.rt_auth_users to service_role;
+
 -- 4. Aktifkan Supabase Realtime pada tabel rt_app_state
 do $$
 begin

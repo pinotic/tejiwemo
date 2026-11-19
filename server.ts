@@ -1276,6 +1276,9 @@ if (USE_SUPABASE || IS_SERVERLESS) {
       if (/invalid api key|jwt/i.test(rawMsg)) {
         friendly =
           'SUPABASE_SERVICE_ROLE_KEY tidak valid. Pastikan Anda mengisi nilai key asli dari Supabase (bukan nama variabelnya), lalu Redeploy di Vercel.';
+      } else if (/permission denied/i.test(rawMsg)) {
+        friendly =
+          'Izin tabel Supabase ditolak (permission denied). Jalankan perintah GRANT terbaru di SQL Editor Supabase dan pastikan SUPABASE_SERVICE_ROLE_KEY memakai Secret/service_role key.';
       } else if (/does not exist|schema cache|Could not find the table/i.test(rawMsg)) {
         friendly =
           'Tabel Supabase (rt_app_state / rt_auth_users) belum dibuat. Jalankan isi file supabase/schema.sql di SQL Editor Supabase.';
