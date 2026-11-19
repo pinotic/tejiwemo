@@ -1,40 +1,69 @@
-import "server-only";
-import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
-import { db, users } from "@/db";
-import { COOKIE, verifySession } from "./session";
-import { READ_ACCESS, WRITE_ACCESS, type Module } from "./refs";
+import type { AuthUser } from '../types';
 
-export type CurrentUser = {
-  id: number;
-  username: string;
-  name: string;
-  jabatan: string;
-  role: string;
-};
+const AUTH_TOKEN_KEY = 'portal_warga_auth_token';
 
-// Selalu cek ulang ke database: akun yang dinonaktifkan langsung kehilangan akses.
-export async function getUser(): Promise<CurrentUser | null> {
-  const s = await verifySession(cookies().get(COOKIE)?.value);
-  if (!s) return null;
-  const [u] = await db.select().from(users).where(eq(users.id, s.uid)).limit(1);
-  if (!u || !u.active) return null;
-  return { id: u.id, username: u.username, name: u.name, jabatan: u.jabatan, role: u.role };
+export function getStoredAuthToken(): string | null {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY);
+  } catch {
+    return null;
+  }
 }
 
-export async function requireUser(): Promise<CurrentUser> {
-  const u = await getUser();
-  if (!u) redirect("/pengurus/login");
-  return u;
+export function setStoredAuthToken(token: string | null): void {
+  try {
+    if (token) {
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
 }
 
-export async function requireAccess(mod: Module, mode: "read" | "write" = "read") {
-  const u = await requireUser();
-  const allowed = (mode === "write" ? WRITE_ACCESS : READ_ACCESS)[mod];
-  if (!allowed.includes(u.role)) redirect("/pengurus?akses=ditolak");
-  return u;
+export function authFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const token = getStoredAuthToken();
+  const headers = new Headers(init.headers);
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  return fetch(input, {
+    ...init,
+    credentials: 'include',
+    headers,
+  });
 }
 
-export const canWrite = (role: string, mod: Module) => WRITE_ACCESS[mod].includes(role);
-export const canRead = (role: string, mod: Module) => READ_ACCESS[mod].includes(role);
+export async function fetchCurrentUser(): Promise<AuthUser | null> {
+  const res = await authFetch('/api/auth/me');
+  if (!res.ok) return null;
+  const data = (await res.json()) as { user?: AuthUser };
+  return data.user ?? null;
+}
+
+export async function loginWithCredentials(
+  username: string,
+  password: string
+): Promise<{ user: AuthUser; token: string }> {
+  const res = await fetch('/api/auth/login', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  const data = (await res.json()) as { user?: AuthUser; token?: string; error?: string };
+  if (!res.ok || !data.user || !data.token) {
+    throw new Error(data.error || 'Gagal masuk ke portal pengurus.');
+  }
+  setStoredAuthToken(data.token);
+  return { user: data.user, token: data.token };
+}
+
+export async function logoutSession(): Promise<void> {
+  try {
+    await authFetch('/api/auth/logout', { method: 'POST' });
+  } finally {
+    setStoredAuthToken(null);
+  }
+}

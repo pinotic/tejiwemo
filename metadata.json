@@ -1,0 +1,8 @@
+{
+  "name": "Portal Warga · RT 01 / RW 05 Dinoyo",
+  "description": "Portal Warga RT 01/RW 05 Kelurahan Dinoyo: berita warga, transparansi kas setiap divisi, pengajuan dan progress usulan warga, agenda kegiatan, serta notifikasi pemantauan status usulan secara real-time.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
