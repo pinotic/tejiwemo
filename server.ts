@@ -1355,10 +1355,10 @@ app.post('/api/auth/logout', (_req, res) => {
 app.get('/api/auth/me', (req, res) => {
   const user = verifyAuthToken(extractToken(req));
   if (!user) {
-    res.status(401).json({ error: 'Belum masuk.' });
+    res.json({ authenticated: false, user: null });
     return;
   }
-  res.json({ user: sanitizeUser(user) });
+  res.json({ authenticated: true, user: sanitizeUser(user) });
 });
 
 app.get('/api/admin/users', requireSuperadmin, (_req, res) => {

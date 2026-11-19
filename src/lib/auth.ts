@@ -38,8 +38,12 @@ export function authFetch(input: string, init: RequestInit = {}): Promise<Respon
 export async function fetchCurrentUser(): Promise<AuthUser | null> {
   const res = await authFetch('/api/auth/me');
   if (!res.ok) return null;
-  const data = (await res.json()) as { user?: AuthUser };
-  return data.user ?? null;
+  const data = (await res.json()) as { user?: AuthUser | null };
+  if (!data.user) {
+    setStoredAuthToken(null);
+    return null;
+  }
+  return data.user;
 }
 
 export async function loginWithCredentials(
