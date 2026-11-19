@@ -93,7 +93,10 @@ export function useRtRealtime() {
   const fetchInitialState = useCallback(async () => {
     try {
       const res = await fetch('/api/state');
-      if (!res.ok) throw new Error('Gagal memuat data portal RT');
+      if (!res.ok) {
+        const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errBody.error || `Gagal memuat data portal RT (HTTP ${res.status})`);
+      }
       const data = (await res.json()) as RtSnapshotState;
       if (mountedRef.current) {
         setState(data);
@@ -351,7 +354,22 @@ export function useRtRealtime() {
       };
     }
 
-    // Mode 2: Local Node/Express WebSocket (/ws)
+    // Mode 2: Polling fallback on serverless hosting (e.g. Vercel without VITE_SUPABASE_ANON_KEY)
+    const isVercelProd =
+      window.location.hostname.endsWith('.vercel.app') ||
+      (import.meta.env.PROD && window.location.protocol === 'https:');
+    if (isVercelProd && !window.location.hostname.includes('run.app')) {
+      setConnectionState('connected');
+      const pollTimer = window.setInterval(() => {
+        if (mountedRef.current) fetchInitialState();
+      }, 15000);
+      return () => {
+        mountedRef.current = false;
+        window.clearInterval(pollTimer);
+      };
+    }
+
+    // Mode 3: Local Node/Express WebSocket (/ws)
     let retryDelay = 1200;
 
     function connectWebSocket() {

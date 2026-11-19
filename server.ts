@@ -26,7 +26,7 @@ import type {
   RtSnapshotState,
   SiteSettings,
   TreasuryTransaction,
-} from './src/types.ts';
+} from './src/types';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1185,6 +1185,27 @@ function requireSuperadmin(
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
+// Health endpoint runs before Supabase sync so deployment checks always return diagnostics
+app.get('/api/health', async (_req, res) => {
+  let dbOk = !USE_SUPABASE;
+  let dbError: string | null = null;
+  if (USE_SUPABASE) {
+    try {
+      await syncFromSupabase();
+      dbOk = true;
+    } catch (err) {
+      dbError = err instanceof Error ? err.message : 'Unknown Supabase error';
+    }
+  }
+  res.json({
+    ok: dbOk,
+    storage: USE_SUPABASE ? 'supabase' : 'local-json',
+    serverless: IS_SERVERLESS,
+    dbError,
+    clients: wss?.clients.size || 0,
+  });
+});
+
 if (USE_SUPABASE) {
   app.use('/api', async (_req, res, next) => {
     try {
@@ -1207,7 +1228,18 @@ if (USE_SUPABASE) {
       next();
     } catch (err) {
       console.error('Supabase sync failed:', err);
-      res.status(500).json({ error: 'Gagal terhubung ke database Supabase.' });
+      const rawMsg = err instanceof Error ? err.message : 'Unknown error';
+      let friendly = 'Gagal terhubung ke database Supabase.';
+      if (/invalid api key|jwt/i.test(rawMsg)) {
+        friendly =
+          'SUPABASE_SERVICE_ROLE_KEY tidak valid. Pastikan Anda mengisi nilai key asli dari Supabase (bukan nama variabelnya), lalu Redeploy di Vercel.';
+      } else if (/does not exist|schema cache|Could not find the table/i.test(rawMsg)) {
+        friendly =
+          'Tabel Supabase (rt_app_state / rt_auth_users) belum dibuat. Jalankan isi file supabase/schema.sql di SQL Editor Supabase.';
+      } else {
+        friendly = `Gagal terhubung ke Supabase: ${rawMsg}`;
+      }
+      res.status(500).json({ error: friendly });
     }
   });
 }
@@ -1231,15 +1263,6 @@ wss?.on('connection', (ws) => {
     payload: state,
   };
   ws.send(JSON.stringify(syncEvent));
-});
-
-// REST API Endpoints
-app.get('/api/health', (_req, res) => {
-  res.json({
-    ok: true,
-    storage: USE_SUPABASE ? 'supabase' : 'local-json',
-    clients: wss?.clients.size || 0,
-  });
 });
 
 app.get('/api/state', (_req, res) => {
