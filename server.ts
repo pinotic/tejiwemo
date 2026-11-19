@@ -26,7 +26,7 @@ import type {
   RtSnapshotState,
   SiteSettings,
   TreasuryTransaction,
-} from './src/types';
+} from './src/types.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,15 +38,37 @@ const AUTH_FILE = path.join(DATA_DIR, 'rt-auth.json');
 const IS_SERVERLESS = Boolean(
   process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME
 );
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim();
+const SUPABASE_SERVICE_ROLE_KEY = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
 const USE_SUPABASE = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
 
-const supabaseAdmin: SupabaseClient | null = USE_SUPABASE
-  ? createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!, {
+let supabaseInitError: string | null = null;
+let supabaseAdmin: SupabaseClient | null = null;
+
+if (USE_SUPABASE) {
+  try {
+    if (!/^https?:\/\/.+/.test(SUPABASE_URL)) {
+      throw new Error(
+        `SUPABASE_URL tidak valid ("${SUPABASE_URL.slice(0, 30)}"). Harus diawali https://`
+      );
+    }
+    if (
+      SUPABASE_SERVICE_ROLE_KEY === 'SUPABASE_SERVICE_ROLE_KEY' ||
+      SUPABASE_SERVICE_ROLE_KEY.length < 20
+    ) {
+      throw new Error(
+        'SUPABASE_SERVICE_ROLE_KEY masih berisi placeholder atau terlalu pendek. Salin nilai asli dari Supabase Project Settings -> API Keys.'
+      );
+    }
+    supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
       auth: { persistSession: false, autoRefreshToken: false },
-    })
-  : null;
+    });
+  } catch (err) {
+    supabaseInitError =
+      err instanceof Error ? err.message : 'Gagal inisialisasi klien Supabase admin.';
+    console.error('Supabase init error:', supabaseInitError);
+  }
+}
 
 let dirtyState = false;
 let dirtyAuth = false;
@@ -1187,13 +1209,18 @@ app.use(express.json({ limit: '1mb' }));
 
 // Health endpoint runs before Supabase sync so deployment checks always return diagnostics
 app.get('/api/health', async (_req, res) => {
-  let dbOk = !USE_SUPABASE;
-  let dbError: string | null = null;
-  if (USE_SUPABASE) {
+  let dbOk = !USE_SUPABASE && !IS_SERVERLESS;
+  let dbError: string | null = supabaseInitError;
+  if (IS_SERVERLESS && !USE_SUPABASE) {
+    dbOk = false;
+    dbError =
+      'SUPABASE_URL atau SUPABASE_SERVICE_ROLE_KEY belum terisi di Environment Variables Vercel (Production).';
+  } else if (USE_SUPABASE && supabaseAdmin) {
     try {
       await syncFromSupabase();
       dbOk = true;
     } catch (err) {
+      dbOk = false;
       dbError = err instanceof Error ? err.message : 'Unknown Supabase error';
     }
   }
@@ -1201,13 +1228,29 @@ app.get('/api/health', async (_req, res) => {
     ok: dbOk,
     storage: USE_SUPABASE ? 'supabase' : 'local-json',
     serverless: IS_SERVERLESS,
+    hasSupabaseUrl: Boolean(SUPABASE_URL),
+    hasServiceRoleKey: Boolean(SUPABASE_SERVICE_ROLE_KEY),
+    keyFormat: SUPABASE_SERVICE_ROLE_KEY
+      ? `${SUPABASE_SERVICE_ROLE_KEY.slice(0, 6)}...(${SUPABASE_SERVICE_ROLE_KEY.length} chars)`
+      : null,
     dbError,
     clients: wss?.clients.size || 0,
   });
 });
 
-if (USE_SUPABASE) {
+if (USE_SUPABASE || IS_SERVERLESS) {
   app.use('/api', async (_req, res, next) => {
+    if (supabaseInitError) {
+      res.status(500).json({ error: supabaseInitError });
+      return;
+    }
+    if (!supabaseAdmin) {
+      res.status(500).json({
+        error:
+          'Environment Variables SUPABASE_URL atau SUPABASE_SERVICE_ROLE_KEY belum terisi di Vercel (Production).',
+      });
+      return;
+    }
     try {
       await syncFromSupabase();
       const origJson = res.json.bind(res);
