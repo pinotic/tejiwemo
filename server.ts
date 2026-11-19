@@ -1238,6 +1238,51 @@ app.get('/api/health', async (_req, res) => {
   });
 });
 
+// Lightweight keep-alive endpoint for Vercel Cron to prevent Supabase Free tier auto-pause
+app.get('/api/cron/keepalive', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET?.trim();
+  if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
+    res.status(401).json({ ok: false, error: 'Unauthorized cron request.' });
+    return;
+  }
+
+  const pingedAt = new Date().toISOString();
+  if (!USE_SUPABASE || !supabaseAdmin) {
+    res.status(IS_SERVERLESS ? 500 : 200).json({
+      ok: !IS_SERVERLESS,
+      pingedAt,
+      storage: USE_SUPABASE ? 'supabase' : 'local-json',
+      message: supabaseInitError || 'Supabase belum dikonfigurasi.',
+    });
+    return;
+  }
+
+  try {
+    const { error } = await supabaseAdmin
+      .from('rt_app_state')
+      .select('id')
+      .eq('id', 'main')
+      .limit(1);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    res.json({
+      ok: true,
+      pingedAt,
+      storage: 'supabase',
+      message: 'Supabase keep-alive berhasil.',
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      pingedAt,
+      error: err instanceof Error ? err.message : 'Gagal ping Supabase.',
+    });
+  }
+});
+
 if (USE_SUPABASE || IS_SERVERLESS) {
   app.use('/api', async (_req, res, next) => {
     if (supabaseInitError) {
