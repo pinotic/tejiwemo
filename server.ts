@@ -266,6 +266,13 @@ async function listFcmTokens(): Promise<string[]> {
   return loadLocalFcmTokens().map((t) => t.token);
 }
 
+let lastFcmDiagnostic: {
+  at: string;
+  successCount: number;
+  failureCount: number;
+  error: string | null;
+} | null = null;
+
 function resolveNotificationTargetUrl(notification: NotificationItem): string {
   switch (notification.type) {
     case 'agenda_new':
@@ -280,16 +287,61 @@ function resolveNotificationTargetUrl(notification: NotificationItem): string {
   }
 }
 
-async function sendFcmPushForNotification(notification: NotificationItem): Promise<void> {
-  if (!fcmMessaging) return;
+function resolvePublicHttpsOrigin(req?: express.Request): string | null {
+  if (req) {
+    const protoHeader = (req.headers['x-forwarded-proto'] || req.protocol || '')
+      .toString()
+      .split(',')[0]
+      .trim();
+    const hostHeader = (req.headers['x-forwarded-host'] || req.headers.host || '')
+      .toString()
+      .split(',')[0]
+      .trim();
+    if (protoHeader === 'https' && hostHeader) {
+      return `https://${hostHeader}`;
+    }
+  }
+  const prodUrl = (process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || '').trim();
+  if (prodUrl) {
+    return prodUrl.startsWith('http') ? prodUrl.replace(/^http:\/\//i, 'https://') : `https://${prodUrl}`;
+  }
+  return null;
+}
+
+async function sendFcmPushForNotification(
+  notification: NotificationItem,
+  req?: express.Request
+): Promise<void> {
+  if (!fcmMessaging) {
+    lastFcmDiagnostic = {
+      at: new Date().toISOString(),
+      successCount: 0,
+      failureCount: 0,
+      error: fcmInitError || 'Firebase Admin SDK belum terkonfigurasi di server.',
+    };
+    return;
+  }
   if (!ALLOWED_NOTIFICATION_TYPES.has(notification.type)) return;
 
   const tokens = await listFcmTokens();
-  if (tokens.length === 0) return;
+  if (tokens.length === 0) {
+    lastFcmDiagnostic = {
+      at: new Date().toISOString(),
+      successCount: 0,
+      failureCount: 0,
+      error: 'Belum ada token perangkat terdaftar di tabel fcm_tokens.',
+    };
+    return;
+  }
 
-  const targetUrl = resolveNotificationTargetUrl(notification);
-  const iconUrl = '/assets/aistudio/500309821_1300971965363211_2221899409798109426_n__1__55125c15.png';
+  const targetPath = resolveNotificationTargetUrl(notification);
+  const httpsOrigin = resolvePublicHttpsOrigin(req);
+  const iconPath = '/assets/aistudio/500309821_1300971965363211_2221899409798109426_n__1__55125c15.png';
+  const iconUrl = httpsOrigin ? `${httpsOrigin}${iconPath}` : iconPath;
   const staleTokens: string[] = [];
+  let totalSuccess = 0;
+  let totalFailure = 0;
+  let firstError: string | null = null;
 
   for (let i = 0; i < tokens.length; i += 500) {
     const chunk = tokens.slice(i, i + 500);
@@ -303,12 +355,19 @@ async function sendFcmPushForNotification(notification: NotificationItem): Promi
         type: notification.type,
         notificationId: notification.id,
         proposalId: notification.proposalId || '',
-        url: targetUrl,
+        url: targetPath,
       },
       webpush: {
-        fcmOptions: {
-          link: targetUrl,
+        headers: {
+          Urgency: 'high',
         },
+        ...(httpsOrigin
+          ? {
+              fcmOptions: {
+                link: `${httpsOrigin}${targetPath}`,
+              },
+            }
+          : {}),
         notification: {
           title: notification.title,
           body: notification.message,
@@ -325,9 +384,15 @@ async function sendFcmPushForNotification(notification: NotificationItem): Promi
       },
     });
 
+    totalSuccess += batchResult.successCount;
+    totalFailure += batchResult.failureCount;
+
     batchResult.responses.forEach((resp, idx) => {
       if (!resp.success && resp.error) {
         const code = resp.error.code;
+        if (!firstError) {
+          firstError = `${code}: ${resp.error.message}`;
+        }
         if (
           code === 'messaging/registration-token-not-registered' ||
           code === 'messaging/invalid-registration-token'
@@ -337,6 +402,13 @@ async function sendFcmPushForNotification(notification: NotificationItem): Promi
       }
     });
   }
+
+  lastFcmDiagnostic = {
+    at: new Date().toISOString(),
+    successCount: totalSuccess,
+    failureCount: totalFailure,
+    error: firstError,
+  };
 
   if (staleTokens.length > 0) {
     await deleteFcmTokens(staleTokens).catch(() => undefined);
@@ -1581,6 +1653,7 @@ app.get('/api/health', async (_req, res) => {
       dbError = err instanceof Error ? err.message : 'Unknown Supabase error';
     }
   }
+  const fcmTokens = await listFcmTokens().catch(() => []);
   res.json({
     ok: dbOk,
     storage: USE_SUPABASE ? 'supabase' : 'local-json',
@@ -1593,7 +1666,9 @@ app.get('/api/health', async (_req, res) => {
     dbError,
     fcmConfigured: Boolean(fcmMessaging),
     fcmWebReady: getFcmWebConfig().webPushReady,
+    fcmRegisteredDevices: fcmTokens.length,
     fcmInitError,
+    lastFcmDiagnostic,
     clients: wss?.clients.size || 0,
   });
 });
@@ -1702,6 +1777,64 @@ app.post('/api/push/unsubscribe', async (req, res) => {
     res.status(500).json({
       error: err instanceof Error ? err.message : 'Gagal menghapus token notifikasi perangkat.',
     });
+  }
+});
+
+app.post('/api/push/test-self', async (req, res) => {
+  const body = (req.body || {}) as Partial<{ token: string }>;
+  const token = (body.token || '').trim();
+  if (token.length < 20) {
+    res.status(400).json({ error: 'Token perangkat tidak ditemukan. Coba aktifkan ulang notifikasi.' });
+    return;
+  }
+  if (!fcmMessaging) {
+    res.status(500).json({
+      error:
+        fcmInitError ||
+        'Firebase Admin SDK belum aktif di server (FIREBASE_SERVICE_ACCOUNT_JSON atau FIREBASE_PRIVATE_KEY belum terisi di Vercel).',
+    });
+    return;
+  }
+
+  const httpsOrigin = resolvePublicHttpsOrigin(req);
+  const iconPath = '/assets/aistudio/500309821_1300971965363211_2221899409798109426_n__1__55125c15.png';
+  const iconUrl = httpsOrigin ? `${httpsOrigin}${iconPath}` : iconPath;
+
+  try {
+    const messageId = await fcmMessaging.send({
+      token,
+      notification: {
+        title: 'Tes Notifikasi Portal Warga',
+        body: 'Notifikasi push FCM ke perangkat ini sudah terhubung dengan baik.',
+      },
+      data: {
+        type: 'agenda_new',
+        url: '/?tab=agenda',
+      },
+      webpush: {
+        headers: {
+          Urgency: 'high',
+        },
+        ...(httpsOrigin
+          ? {
+              fcmOptions: {
+                link: `${httpsOrigin}/?tab=agenda`,
+              },
+            }
+          : {}),
+        notification: {
+          title: 'Tes Notifikasi Portal Warga',
+          body: 'Notifikasi push FCM ke perangkat ini sudah terhubung dengan baik.',
+          icon: iconUrl,
+          badge: iconUrl,
+          tag: 'portal-warga-test',
+        },
+      },
+    });
+    res.json({ ok: true, messageId });
+  } catch (err) {
+    const rawMsg = err instanceof Error ? err.message : 'Gagal mengirim tes notifikasi FCM.';
+    res.status(500).json({ error: rawMsg });
   }
 });
 
@@ -2281,7 +2414,7 @@ app.post('/api/proposals', async (req, res) => {
     payload: { proposal, notification },
   });
 
-  await sendFcmPushForNotification(notification).catch((err) =>
+  await sendFcmPushForNotification(notification, req).catch((err) =>
     console.error('FCM push failed (proposal:created):', err)
   );
 
@@ -2351,7 +2484,7 @@ app.patch('/api/proposals/:id/status', requirePengurusOrSuperadmin, async (req, 
     payload: { proposal: updated, notification },
   });
 
-  await sendFcmPushForNotification(notification).catch((err) =>
+  await sendFcmPushForNotification(notification, req).catch((err) =>
     console.error('FCM push failed (proposal:updated):', err)
   );
 
@@ -2520,7 +2653,7 @@ app.post('/api/treasury', requirePengurusOrSuperadmin, async (req, res) => {
     payload: { transaction, notification },
   });
 
-  await sendFcmPushForNotification(notification).catch((err) =>
+  await sendFcmPushForNotification(notification, req).catch((err) =>
     console.error('FCM push failed (treasury:created):', err)
   );
 
@@ -2829,7 +2962,7 @@ app.post('/api/agenda', requirePengurusOrSuperadmin, async (req, res) => {
     payload: { agenda: agendaItem, notification },
   });
 
-  await sendFcmPushForNotification(notification).catch((err) =>
+  await sendFcmPushForNotification(notification, req).catch((err) =>
     console.error('FCM push failed (agenda:created):', err)
   );
 

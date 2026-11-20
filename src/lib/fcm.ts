@@ -164,7 +164,7 @@ export async function subscribeWebPush(): Promise<string> {
     throw new Error('Browser atau mode penyamaran ini tidak mendukung Firebase Messaging.');
   }
 
-  const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', {
+  const registration = await navigator.serviceWorker.register('/api/push/sw', {
     scope: '/',
   });
   await navigator.serviceWorker.ready;
@@ -241,7 +241,7 @@ export async function syncExistingWebPushSubscription(
   if (!messaging) return () => {};
 
   try {
-    const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', {
+    const registration = await navigator.serviceWorker.register('/api/push/sw', {
       scope: '/',
     });
     const freshToken = await getToken(messaging, {
@@ -264,4 +264,20 @@ export async function syncExistingWebPushSubscription(
   return onMessage(messaging, () => {
     onForegroundMessage?.();
   });
+}
+
+export async function sendSelfTestPush(): Promise<void> {
+  const savedToken = localStorage.getItem(FCM_TOKEN_STORAGE_KEY);
+  if (!savedToken) {
+    throw new Error('Token perangkat belum tersimpan. Klik Aktifkan terlebih dahulu.');
+  }
+  const res = await fetch('/api/push/test-self', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: savedToken }),
+  });
+  if (!res.ok) {
+    const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(errBody.error || `Gagal mengirim tes push (HTTP ${res.status}).`);
+  }
 }

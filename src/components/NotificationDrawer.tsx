@@ -4,6 +4,7 @@ import type { ConnectionState } from '../hooks/useRtRealtime';
 import {
   type BrowserPushState,
   detectBrowserPushState,
+  sendSelfTestPush,
   subscribeWebPush,
   unsubscribeWebPush,
 } from '../lib/fcm';
@@ -78,6 +79,23 @@ export function NotificationDrawer({
       await unsubscribeWebPush();
       setPushState('prompt');
       setPushFeedback('Notifikasi push perangkat ini dinonaktifkan.');
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
+  const handleTestPush = async () => {
+    setPushBusy(true);
+    setPushFeedback(null);
+    try {
+      await sendSelfTestPush();
+      setPushFeedback(
+        'Tes push terkirim oleh server! Tutup/minimize tab browser jika ingin melihatnya di notification bar.'
+      );
+    } catch (err) {
+      setPushFeedback(
+        err instanceof Error ? err.message : 'Gagal mengirim tes notifikasi push.'
+      );
     } finally {
       setPushBusy(false);
     }
@@ -179,14 +197,24 @@ export function NotificationDrawer({
                   <BellRing className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                   <span className="truncate">Notifikasi push aktif di perangkat ini</span>
                 </div>
-                <button
-                  type="button"
-                  disabled={pushBusy}
-                  onClick={handleDisablePush}
-                  className="shrink-0 text-[11px] font-medium text-slate-500 hover:text-slate-800 disabled:opacity-60"
-                >
-                  {pushBusy ? '...' : 'Nonaktifkan'}
-                </button>
+                <div className="flex items-center gap-2.5 shrink-0">
+                  <button
+                    type="button"
+                    disabled={pushBusy}
+                    onClick={handleTestPush}
+                    className="text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 disabled:opacity-60"
+                  >
+                    Tes Push
+                  </button>
+                  <button
+                    type="button"
+                    disabled={pushBusy}
+                    onClick={handleDisablePush}
+                    className="text-[11px] font-medium text-slate-500 hover:text-slate-800 disabled:opacity-60"
+                  >
+                    {pushBusy ? '...' : 'Nonaktifkan'}
+                  </button>
+                </div>
               </div>
             )}
 
