@@ -20,9 +20,18 @@ create table if not exists public.rt_auth_users (
   updated_at timestamptz
 );
 
+-- 2b. Tabel token perangkat untuk Firebase Cloud Messaging (FCM Web & Android)
+create table if not exists public.fcm_tokens (
+  token text primary key,
+  platform text not null default 'web' check (platform in ('web', 'android', 'ios')),
+  user_agent text,
+  updated_at timestamptz not null default now()
+);
+
 -- 3. Aktifkan Row Level Security (RLS)
 alter table public.rt_app_state enable row level security;
 alter table public.rt_auth_users enable row level security;
+alter table public.fcm_tokens enable row level security;
 
 -- rt_app_state boleh dibaca oleh client (anon) untuk fitur Supabase Realtime;
 -- semua proses tulis tetap melewati Backend API (/api/*) memakai SUPABASE_SERVICE_ROLE_KEY.
@@ -33,14 +42,15 @@ create policy "Public read rt_app_state"
   to anon, authenticated
   using (true);
 
--- Catatan: rt_auth_users sengaja TIDAK diberi policy untuk anon/authenticated
--- sehingga hanya backend dengan SUPABASE_SERVICE_ROLE_KEY yang bisa membaca/mengubah akun & password.
+-- Catatan: rt_auth_users dan fcm_tokens sengaja TIDAK diberi policy untuk anon/authenticated
+-- sehingga hanya backend dengan SUPABASE_SERVICE_ROLE_KEY yang bisa membaca/mengelola akun & token push.
 
 -- 3b. Berikan hak akses tabel secara eksplisit (wajib pada proyek Supabase baru)
 grant usage on schema public to anon, authenticated, service_role;
 grant select on table public.rt_app_state to anon, authenticated;
 grant all privileges on table public.rt_app_state to service_role;
 grant all privileges on table public.rt_auth_users to service_role;
+grant all privileges on table public.fcm_tokens to service_role;
 
 -- 4. Aktifkan Supabase Realtime pada tabel rt_app_state
 do $$

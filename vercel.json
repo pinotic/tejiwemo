@@ -12,11 +12,15 @@
       "destination": "/api/index"
     },
     {
+      "source": "/firebase-messaging-sw.js",
+      "destination": "/api/index"
+    },
+    {
       "source": "/favicon.ico",
       "destination": "/assets/aistudio/500309821_1300971965363211_2221899409798109426_n__1__55125c15.png"
     },
     {
-      "source": "/((?!api/|assets/).*)",
+      "source": "/((?!api/|assets/|firebase-messaging-sw\\.js).*)",
       "destination": "/index.html"
     }
   ],

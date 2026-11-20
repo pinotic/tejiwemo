@@ -2,6 +2,7 @@ import {
   Bell,
   CalendarDays,
   ClipboardList,
+  FileText,
   Home,
   LockKeyhole,
   Newspaper,
@@ -32,6 +33,7 @@ const SHEET_TABS: Array<{ id: NavTab; label: string; icon: typeof Home }> = [
   { id: 'ringkasan', label: 'Home', icon: Home },
   { id: 'berita', label: 'Berita', icon: Newspaper },
   { id: 'kas', label: 'Kas Divisi', icon: Wallet },
+  { id: 'notulen', label: 'Notulen Rapat', icon: FileText },
   { id: 'usulan', label: 'Usulan Warga', icon: ClipboardList },
   { id: 'agenda', label: 'Agenda', icon: CalendarDays },
 ];
@@ -53,6 +55,7 @@ export function MobileBottomNav({
     menuOpen ||
     activeTab === 'berita' ||
     activeTab === 'kas' ||
+    activeTab === 'notulen' ||
     activeTab === 'usulan';
 
   const handleNav = (tab: NavTab) => {

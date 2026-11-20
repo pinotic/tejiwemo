@@ -116,6 +116,22 @@ export interface NewsItem {
   imageUrl?: string;
 }
 
+export interface MeetingNoteItem {
+  id: string;
+  referenceCode: string;
+  divisionId: DivisionId;
+  title: string;
+  date: string;
+  time: string;
+  location: string;
+  leader: string;
+  noteTaker: string;
+  attendeesCount: number;
+  agendaTopics: string;
+  decisions: string;
+  createdAt: string;
+}
+
 export interface HeroConfig {
   eyebrow: string;
   title: string;
@@ -127,17 +143,7 @@ export interface HeroConfig {
 
 export interface NotificationItem {
   id: string;
-  type:
-    | 'proposal_status'
-    | 'proposal_new'
-    | 'activity_new'
-    | 'treasury_new'
-    | 'agenda_new'
-    | 'division_new'
-    | 'division_deleted'
-    | 'hero_updated'
-    | 'officials_updated'
-    | 'news_new';
+  type: 'proposal_status' | 'proposal_new' | 'treasury_new' | 'agenda_new';
   title: string;
   message: string;
   proposalId?: string;
@@ -163,6 +169,7 @@ export interface RtSnapshotState {
   proposals: ProposalItem[];
   agenda: AgendaItem[];
   news: NewsItem[];
+  notulen: MeetingNoteItem[];
   notifications: NotificationItem[];
 }
 
@@ -206,13 +213,13 @@ export type RtRealtimeEvent =
   | { type: 'treasury:deleted'; payload: { transactionId: string } }
   | {
       type: 'division:created';
-      payload: { division: DivisionInfo; notification: NotificationItem };
+      payload: { division: DivisionInfo };
     }
   | { type: 'division:updated'; payload: { division: DivisionInfo } }
-  | { type: 'division:deleted'; payload: { divisionId: string; notification: NotificationItem } }
+  | { type: 'division:deleted'; payload: { divisionId: string } }
   | {
       type: 'activity:created';
-      payload: { activity: ActivityItem; notification: NotificationItem };
+      payload: { activity: ActivityItem };
     }
   | {
       type: 'agenda:created';
@@ -222,8 +229,14 @@ export type RtRealtimeEvent =
   | { type: 'agenda:deleted'; payload: { agendaId: string } }
   | {
       type: 'news:created';
-      payload: { news: NewsItem; notification: NotificationItem };
+      payload: { news: NewsItem };
     }
   | { type: 'news:updated'; payload: { news: NewsItem } }
   | { type: 'news:deleted'; payload: { newsId: string } }
+  | {
+      type: 'notulen:created';
+      payload: { notulen: MeetingNoteItem };
+    }
+  | { type: 'notulen:updated'; payload: { notulen: MeetingNoteItem } }
+  | { type: 'notulen:deleted'; payload: { notulenId: string } }
   | { type: 'notifications:read'; payload: { id?: string; all?: boolean } };

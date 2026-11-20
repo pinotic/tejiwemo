@@ -32,10 +32,18 @@ const EMPTY_STATE: RtSnapshotState = {
   proposals: [],
   agenda: [],
   news: [],
+  notulen: [],
   notifications: [],
 };
 
 const READ_NOTIFICATIONS_KEY = 'portal_warga_read_notifications';
+
+const ALLOWED_NOTIFICATION_TYPES = new Set<NotificationItem['type']>([
+  'agenda_new',
+  'proposal_new',
+  'proposal_status',
+  'treasury_new',
+]);
 
 function loadReadNotificationIds(): Set<string> {
   try {
@@ -63,7 +71,9 @@ function applyLocalReadState(
   notifications: NotificationItem[],
   readIds: Set<string>
 ): NotificationItem[] {
-  return notifications.map((n) => (readIds.has(n.id) ? { ...n, read: true } : n));
+  return notifications
+    .filter((n) => ALLOWED_NOTIFICATION_TYPES.has(n.type))
+    .map((n) => (readIds.has(n.id) ? { ...n, read: true } : n));
 }
 
 function mergeById<T extends { id: string }>(list: T[], incoming: T, prepend = true): T[] {
@@ -95,6 +105,7 @@ export function useRtRealtime() {
   const readIdsRef = useRef<Set<string>>(loadReadNotificationIds());
 
   const pushToast = useCallback((notification: NotificationItem) => {
+    if (!ALLOWED_NOTIFICATION_TYPES.has(notification.type)) return;
     setToasts((prev) => {
       if (prev.some((t) => t.id === notification.id)) return prev;
       return [notification, ...prev].slice(0, 3);
@@ -133,6 +144,7 @@ export function useRtRealtime() {
       if (mountedRef.current) {
         setState({
           ...data,
+          notulen: Array.isArray(data.notulen) ? data.notulen : [],
           notifications: applyLocalReadState(
             Array.isArray(data.notifications) ? data.notifications : [],
             readIdsRef.current
@@ -159,6 +171,7 @@ export function useRtRealtime() {
             siteSettings: event.payload.siteSettings || EMPTY_STATE.siteSettings,
             hero: event.payload.hero || EMPTY_STATE.hero,
             news: Array.isArray(event.payload.news) ? event.payload.news : [],
+            notulen: Array.isArray(event.payload.notulen) ? event.payload.notulen : [],
             notifications: applyLocalReadState(
               Array.isArray(event.payload.notifications) ? event.payload.notifications : [],
               readIdsRef.current
@@ -248,9 +261,7 @@ export function useRtRealtime() {
           setState((prev) => ({
             ...prev,
             divisions: mergeById(prev.divisions, event.payload.division, false),
-            notifications: mergeById(prev.notifications, event.payload.notification, true),
           }));
-          pushToast(event.payload.notification);
           break;
         case 'division:updated':
           setState((prev) => ({
@@ -263,17 +274,13 @@ export function useRtRealtime() {
             ...prev,
             divisions: prev.divisions.filter((d) => d.id !== event.payload.divisionId),
             treasury: prev.treasury.filter((t) => t.divisionId !== event.payload.divisionId),
-            notifications: mergeById(prev.notifications, event.payload.notification, true),
           }));
-          pushToast(event.payload.notification);
           break;
         case 'activity:created':
           setState((prev) => ({
             ...prev,
             activities: mergeById(prev.activities, event.payload.activity, true),
-            notifications: mergeById(prev.notifications, event.payload.notification, true),
           }));
-          pushToast(event.payload.notification);
           break;
         case 'agenda:created':
           setState((prev) => ({
@@ -303,9 +310,7 @@ export function useRtRealtime() {
           setState((prev) => ({
             ...prev,
             news: mergeById(prev.news, event.payload.news, true),
-            notifications: mergeById(prev.notifications, event.payload.notification, true),
           }));
-          pushToast(event.payload.notification);
           break;
         case 'news:updated':
           setState((prev) => ({
@@ -317,6 +322,28 @@ export function useRtRealtime() {
           setState((prev) => ({
             ...prev,
             news: prev.news.filter((n) => n.id !== event.payload.newsId),
+          }));
+          break;
+        case 'notulen:created':
+          setState((prev) => ({
+            ...prev,
+            notulen: mergeById(prev.notulen, event.payload.notulen, true).sort((a, b) =>
+              b.date.localeCompare(a.date)
+            ),
+          }));
+          break;
+        case 'notulen:updated':
+          setState((prev) => ({
+            ...prev,
+            notulen: mergeById(prev.notulen, event.payload.notulen, false).sort((a, b) =>
+              b.date.localeCompare(a.date)
+            ),
+          }));
+          break;
+        case 'notulen:deleted':
+          setState((prev) => ({
+            ...prev,
+            notulen: prev.notulen.filter((n) => n.id !== event.payload.notulenId),
           }));
           break;
         case 'notifications:read':
@@ -368,6 +395,7 @@ export function useRtRealtime() {
               siteSettings: nextRow.data.siteSettings || EMPTY_STATE.siteSettings,
               hero: nextRow.data.hero || EMPTY_STATE.hero,
               news: Array.isArray(nextRow.data.news) ? nextRow.data.news : [],
+              notulen: Array.isArray(nextRow.data.notulen) ? nextRow.data.notulen : [],
               notifications: applyLocalReadState(
                 Array.isArray(nextRow.data.notifications) ? nextRow.data.notifications : [],
                 readIdsRef.current

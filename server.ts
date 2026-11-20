@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import { cert, getApps, initializeApp } from 'firebase-admin/app';
+import { getMessaging, type Messaging } from 'firebase-admin/messaging';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 import express from 'express';
@@ -16,6 +18,7 @@ import type {
   DivisionId,
   DivisionInfo,
   HeroConfig,
+  MeetingNoteItem,
   NewsItem,
   NotificationItem,
   ProposalItem,
@@ -34,6 +37,7 @@ const __dirname = path.dirname(__filename);
 const DATA_DIR = path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'rt-state.json');
 const AUTH_FILE = path.join(DATA_DIR, 'rt-auth.json');
+const FCM_TOKENS_FILE = path.join(DATA_DIR, 'rt-fcm-tokens.json');
 
 const IS_SERVERLESS = Boolean(
   process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME
@@ -67,6 +71,275 @@ if (USE_SUPABASE) {
     supabaseInitError =
       err instanceof Error ? err.message : 'Gagal inisialisasi klien Supabase admin.';
     console.error('Supabase init error:', supabaseInitError);
+  }
+}
+
+// --- Firebase Cloud Messaging (FCM) Initialization & Helpers ---
+let fcmInitError: string | null = null;
+let fcmMessaging: Messaging | null = null;
+
+function parseFirebaseServiceAccount(): {
+  projectId: string;
+  clientEmail: string;
+  privateKey: string;
+} | null {
+  const rawJson = (process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
+  if (rawJson) {
+    const decoded = rawJson.startsWith('{')
+      ? rawJson
+      : Buffer.from(rawJson, 'base64').toString('utf-8');
+    const parsed = JSON.parse(decoded) as {
+      project_id?: string;
+      projectId?: string;
+      client_email?: string;
+      clientEmail?: string;
+      private_key?: string;
+      privateKey?: string;
+    };
+    const projectId = (parsed.project_id || parsed.projectId || '').trim();
+    const clientEmail = (parsed.client_email || parsed.clientEmail || '').trim();
+    const privateKey = (parsed.private_key || parsed.privateKey || '').replace(/\\n/g, '\n').trim();
+    if (projectId && clientEmail && privateKey) {
+      return { projectId, clientEmail, privateKey };
+    }
+    throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON tidak memiliki project_id, client_email, atau private_key.');
+  }
+
+  const projectId = (
+    process.env.FIREBASE_PROJECT_ID ||
+    process.env.VITE_FIREBASE_PROJECT_ID ||
+    ''
+  ).trim();
+  const clientEmail = (process.env.FIREBASE_CLIENT_EMAIL || '').trim();
+  const privateKey = (process.env.FIREBASE_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim();
+
+  if (projectId && clientEmail && privateKey) {
+    return { projectId, clientEmail, privateKey };
+  }
+  return null;
+}
+
+try {
+  const sa = parseFirebaseServiceAccount();
+  if (sa) {
+    const existingApp = getApps().find((a) => a.name === 'portal-warga-admin');
+    const adminApp =
+      existingApp ||
+      initializeApp(
+        {
+          credential: cert(sa),
+        },
+        'portal-warga-admin'
+      );
+    fcmMessaging = getMessaging(adminApp);
+  }
+} catch (err) {
+  fcmInitError = err instanceof Error ? err.message : 'Gagal inisialisasi Firebase Admin SDK.';
+  console.error('Firebase Admin init error:', fcmInitError);
+}
+
+function getFcmWebConfig() {
+  const apiKey = (process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY || '').trim();
+  const authDomain = (
+    process.env.VITE_FIREBASE_AUTH_DOMAIN ||
+    process.env.FIREBASE_AUTH_DOMAIN ||
+    ''
+  ).trim();
+  const projectId = (
+    process.env.VITE_FIREBASE_PROJECT_ID ||
+    process.env.FIREBASE_PROJECT_ID ||
+    ''
+  ).trim();
+  const storageBucket = (
+    process.env.VITE_FIREBASE_STORAGE_BUCKET ||
+    process.env.FIREBASE_STORAGE_BUCKET ||
+    ''
+  ).trim();
+  const messagingSenderId = (
+    process.env.VITE_FIREBASE_MESSAGING_SENDER_ID ||
+    process.env.FIREBASE_MESSAGING_SENDER_ID ||
+    ''
+  ).trim();
+  const appId = (process.env.VITE_FIREBASE_APP_ID || process.env.FIREBASE_APP_ID || '').trim();
+  const vapidKey = (
+    process.env.VITE_FIREBASE_VAPID_KEY ||
+    process.env.FIREBASE_VAPID_KEY ||
+    ''
+  ).trim();
+
+  const webPushReady = Boolean(apiKey && projectId && messagingSenderId && appId && vapidKey);
+  return {
+    webPushReady,
+    serverPushReady: Boolean(fcmMessaging),
+    firebaseConfig: webPushReady
+      ? {
+          apiKey,
+          authDomain: authDomain || `${projectId}.firebaseapp.com`,
+          projectId,
+          storageBucket: storageBucket || `${projectId}.firebasestorage.app`,
+          messagingSenderId,
+          appId,
+        }
+      : null,
+    vapidKey: webPushReady ? vapidKey : null,
+  };
+}
+
+interface StoredFcmToken {
+  token: string;
+  platform: 'web' | 'android' | 'ios';
+  userAgent?: string;
+  updatedAt: string;
+}
+
+function loadLocalFcmTokens(): StoredFcmToken[] {
+  try {
+    if (!fs.existsSync(FCM_TOKENS_FILE)) return [];
+    const parsed = JSON.parse(fs.readFileSync(FCM_TOKENS_FILE, 'utf-8'));
+    return Array.isArray(parsed) ? (parsed as StoredFcmToken[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalFcmTokens(items: StoredFcmToken[]): void {
+  if (USE_SUPABASE || IS_SERVERLESS) return;
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(FCM_TOKENS_FILE, JSON.stringify(items, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Failed to persist rt-fcm-tokens.json:', err);
+  }
+}
+
+async function upsertFcmToken(
+  token: string,
+  platform: 'web' | 'android' | 'ios',
+  userAgent?: string
+): Promise<void> {
+  const now = new Date().toISOString();
+  if (USE_SUPABASE && supabaseAdmin) {
+    const { error } = await supabaseAdmin.from('fcm_tokens').upsert(
+      {
+        token,
+        platform,
+        user_agent: userAgent ? userAgent.slice(0, 240) : null,
+        updated_at: now,
+      },
+      { onConflict: 'token' }
+    );
+    if (error) {
+      throw new Error(`Supabase fcm_tokens upsert error: ${error.message}`);
+    }
+    return;
+  }
+
+  const existing = loadLocalFcmTokens().filter((t) => t.token !== token);
+  existing.unshift({ token, platform, userAgent: userAgent?.slice(0, 240), updatedAt: now });
+  saveLocalFcmTokens(existing.slice(0, 500));
+}
+
+async function deleteFcmTokens(tokens: string[]): Promise<void> {
+  if (tokens.length === 0) return;
+  if (USE_SUPABASE && supabaseAdmin) {
+    await supabaseAdmin.from('fcm_tokens').delete().in('token', tokens);
+    return;
+  }
+  const removeSet = new Set(tokens);
+  const remaining = loadLocalFcmTokens().filter((t) => !removeSet.has(t.token));
+  saveLocalFcmTokens(remaining);
+}
+
+async function listFcmTokens(): Promise<string[]> {
+  if (USE_SUPABASE && supabaseAdmin) {
+    const { data, error } = await supabaseAdmin.from('fcm_tokens').select('token');
+    if (error) {
+      console.error('Supabase fcm_tokens select error:', error.message);
+      return [];
+    }
+    return (data || [])
+      .map((row: { token?: string }) => row.token)
+      .filter((t): t is string => Boolean(t));
+  }
+  return loadLocalFcmTokens().map((t) => t.token);
+}
+
+function resolveNotificationTargetUrl(notification: NotificationItem): string {
+  switch (notification.type) {
+    case 'agenda_new':
+      return '/?tab=agenda';
+    case 'treasury_new':
+      return '/?tab=kas';
+    case 'proposal_new':
+    case 'proposal_status':
+      return notification.proposalId
+        ? `/?tab=usulan&proposalId=${encodeURIComponent(notification.proposalId)}`
+        : '/?tab=usulan';
+  }
+}
+
+async function sendFcmPushForNotification(notification: NotificationItem): Promise<void> {
+  if (!fcmMessaging) return;
+  if (!ALLOWED_NOTIFICATION_TYPES.has(notification.type)) return;
+
+  const tokens = await listFcmTokens();
+  if (tokens.length === 0) return;
+
+  const targetUrl = resolveNotificationTargetUrl(notification);
+  const iconUrl = '/assets/aistudio/500309821_1300971965363211_2221899409798109426_n__1__55125c15.png';
+  const staleTokens: string[] = [];
+
+  for (let i = 0; i < tokens.length; i += 500) {
+    const chunk = tokens.slice(i, i + 500);
+    const batchResult = await fcmMessaging.sendEachForMulticast({
+      tokens: chunk,
+      notification: {
+        title: notification.title,
+        body: notification.message,
+      },
+      data: {
+        type: notification.type,
+        notificationId: notification.id,
+        proposalId: notification.proposalId || '',
+        url: targetUrl,
+      },
+      webpush: {
+        fcmOptions: {
+          link: targetUrl,
+        },
+        notification: {
+          title: notification.title,
+          body: notification.message,
+          icon: iconUrl,
+          badge: iconUrl,
+          tag: notification.id,
+        },
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          channelId: 'portal_warga_default',
+        },
+      },
+    });
+
+    batchResult.responses.forEach((resp, idx) => {
+      if (!resp.success && resp.error) {
+        const code = resp.error.code;
+        if (
+          code === 'messaging/registration-token-not-registered' ||
+          code === 'messaging/invalid-registration-token'
+        ) {
+          staleTokens.push(chunk[idx]);
+        }
+      }
+    });
+  }
+
+  if (staleTokens.length > 0) {
+    await deleteFcmTokens(staleTokens).catch(() => undefined);
   }
 }
 
@@ -683,6 +956,76 @@ function createSeedState(): RtSnapshotState {
         imageUrl: '/src/assets/images/kegiatan_posyandu_1794973652119.jpg',
       },
     ],
+    notulen: [
+      {
+        id: 'not-1',
+        referenceCode: 'NOT-2026-11-01',
+        divisionId: 'kebersihan',
+        title: 'Rapat Koordinasi Drainase & Penjadwalan Kerja Bakti November',
+        date: '2026-11-14',
+        time: '19:30 – 21:00 WIB',
+        location: 'Balai Warga Kelurahan Dinoyo',
+        leader: 'Bpk. Hendra Wijaya',
+        noteTaker: 'Ibu Dewi Kartika',
+        attendeesCount: 16,
+        agendaTopics:
+          'Evaluasi saluran air menjelang puncak musim hujan, kebutuhan karung sampah, dan pembagian regu kerja bakti Blok A–D.',
+        decisions:
+          '1. Kerja bakti pembersihan drainase ditetapkan Minggu 22 November pukul 07:00 WIB.\n2. Pengadaan 2 unit tempat sampah terpilah ditempatkan di Taman Tengah.\n3. Jadwal angkut sampah organik tetap setiap Selasa & Jumat pagi.',
+        createdAt: '2026-11-14T14:30:00.000Z',
+      },
+      {
+        id: 'not-2',
+        referenceCode: 'NOT-2026-11-02',
+        divisionId: 'keamanan',
+        title: 'Evaluasi Titik Blind-Spot CCTV & Jadwal Patroli Malam',
+        date: '2026-11-11',
+        time: '20:00 – 21:30 WIB',
+        location: 'Pos Kamling Utama RT 01',
+        leader: 'Bpk. Rahmat Hidayat',
+        noteTaker: 'Bpk. H. Ahmad Fauzi',
+        attendeesCount: 12,
+        agendaTopics:
+          'Peninjauan rekaman CCTV simpang Blok D, penyesuaian jam tutup portal malam, dan koordinasi petugas jaga.',
+        decisions:
+          '1. Penambahan 2 kamera CCTV night-vision di simpang Blok D telah selesai diuji.\n2. Portal akses tamu ditutup mulai pukul 23:30 WIB dan wajib lapor di pos jaga.\n3. Patroli keliling blok dilakukan setiap 2 jam pada malam hari.',
+        createdAt: '2026-11-11T15:00:00.000Z',
+      },
+      {
+        id: 'not-3',
+        referenceCode: 'NOT-2026-11-03',
+        divisionId: 'sosial',
+        title: 'Persiapan Posyandu Melati & Paket Gizi Balita November',
+        date: '2026-11-09',
+        time: '16:00 – 17:30 WIB',
+        location: 'Balai Warga Kelurahan Dinoyo',
+        leader: 'Ibu Ratna Sari',
+        noteTaker: 'Ibu Dewi Kartika',
+        attendeesCount: 11,
+        agendaTopics:
+          'Pendataan balita & lansia penerima cek kesehatan, koordinasi kader PKK dengan bidan Puskesmas, serta menu PMT.',
+        decisions:
+          '1. Posyandu & cek gula darah lansia digelar 25 November pukul 08:30–11:30 WIB.\n2. Kader menyiapkan 28 paket makanan tambahan bergizi untuk balita terdaftar.\n3. Warga lansia diimbau membawa buku pemeriksaan atau kartu berobat.',
+        createdAt: '2026-11-09T11:00:00.000Z',
+      },
+      {
+        id: 'not-4',
+        referenceCode: 'NOT-2026-11-04',
+        divisionId: 'infrastruktur',
+        title: 'Survei Penggantian Lampu PJU Gang Anggrek Blok C',
+        date: '2026-11-06',
+        time: '19:30 – 20:45 WIB',
+        location: 'Balai Warga Kelurahan Dinoyo',
+        leader: 'Bpk. Agus Santoso',
+        noteTaker: 'Bpk. Bambang Sutrisno',
+        attendeesCount: 9,
+        agendaTopics:
+          'Tindak lanjut usulan warga USL-2026-014 terkait 4 titik lampu PJU mati dan pengecekan kabel tiang penerangan.',
+        decisions:
+          '1. Mengganti 4 unit lampu LED PJU 40W lengkap dengan sensor otomatis.\n2. Pekerjaan dijadwalkan selesai dalam pekan ketiga November.\n3. Anggaran dicatat transparan di kas Divisi Infrastruktur.',
+        createdAt: '2026-11-06T14:00:00.000Z',
+      },
+    ],
     notifications: [
       {
         id: 'notif-1',
@@ -717,18 +1060,16 @@ function createSeedState(): RtSnapshotState {
         timestamp: '2026-11-16T16:40:00.000Z',
         read: true,
       },
-      {
-        id: 'notif-4',
-        type: 'activity_new',
-        title: 'Info Kegiatan Baru: Kerja Bakti 22 November',
-        message:
-          'Divisi Kebersihan mengundang seluruh warga dalam kegiatan pembersihan drainase hari Minggu pukul 07:00 WIB.',
-        timestamp: '2026-11-15T08:00:00.000Z',
-        read: true,
-      },
     ],
   };
 }
+
+const ALLOWED_NOTIFICATION_TYPES = new Set<NotificationItem['type']>([
+  'agenda_new',
+  'proposal_new',
+  'proposal_status',
+  'treasury_new',
+]);
 
 function normalizeLoadedState(parsed: RtSnapshotState): {
   normalized: RtSnapshotState;
@@ -746,6 +1087,10 @@ function normalizeLoadedState(parsed: RtSnapshotState): {
   }
   if (!Array.isArray(parsed.news)) {
     parsed.news = seedRef.news;
+    mutated = true;
+  }
+  if (!Array.isArray(parsed.notulen)) {
+    parsed.notulen = seedRef.notulen;
     mutated = true;
   }
   if (!Array.isArray(parsed.officials) || parsed.officials.length === 0) {
@@ -798,6 +1143,18 @@ function normalizeLoadedState(parsed: RtSnapshotState): {
       mutated = true;
       return { ...next, attendees: match?.attendees || [] };
     });
+  }
+  if (!Array.isArray(parsed.notifications)) {
+    parsed.notifications = seedRef.notifications;
+    mutated = true;
+  } else {
+    const filteredNotifications = parsed.notifications.filter((n) =>
+      ALLOWED_NOTIFICATION_TYPES.has(n.type)
+    );
+    if (filteredNotifications.length !== parsed.notifications.length) {
+      parsed.notifications = filteredNotifications;
+      mutated = true;
+    }
   }
   return { normalized: parsed, mutated };
 }
@@ -1234,8 +1591,118 @@ app.get('/api/health', async (_req, res) => {
       ? `${SUPABASE_SERVICE_ROLE_KEY.slice(0, 6)}...(${SUPABASE_SERVICE_ROLE_KEY.length} chars)`
       : null,
     dbError,
+    fcmConfigured: Boolean(fcmMessaging),
+    fcmWebReady: getFcmWebConfig().webPushReady,
+    fcmInitError,
     clients: wss?.clients.size || 0,
   });
+});
+
+// Dynamic Firebase Messaging Service Worker (reads env config cleanly on Vercel & local dev)
+app.get(['/firebase-messaging-sw.js', '/api/push/sw'], (_req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+
+  const { webPushReady, firebaseConfig } = getFcmWebConfig();
+  if (!webPushReady || !firebaseConfig) {
+    res.send(`
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+`);
+    return;
+  }
+
+  const iconUrl = '/assets/aistudio/500309821_1300971965363211_2221899409798109426_n__1__55125c15.png';
+  res.send(`
+importScripts('https://www.gstatic.com/firebasejs/11.6.0/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/11.6.0/firebase-messaging-compat.js');
+
+firebase.initializeApp(${JSON.stringify(firebaseConfig)});
+
+const messaging = firebase.messaging();
+
+messaging.onBackgroundMessage((payload) => {
+  // Jika payload.notification ada, SDK browser FCM sudah menampilkannya secara otomatis.
+  if (payload && payload.notification) return;
+  const data = (payload && payload.data) || {};
+  const title = data.title || 'Portal Warga RT 01 Dinoyo';
+  const body = data.body || 'Ada pembaruan baru di Portal Warga.';
+  self.registration.showNotification(title, {
+    body,
+    icon: '${iconUrl}',
+    badge: '${iconUrl}',
+    data,
+  });
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const rawData = event.notification.data || {};
+  const fcmData = (rawData.FCM_MSG && rawData.FCM_MSG.data) || rawData;
+  const targetPath = fcmData.url || '/';
+
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if ('focus' in client) {
+          client.navigate(targetPath).catch(() => {});
+          return client.focus();
+        }
+      }
+      if (self.clients.openWindow) {
+        return self.clients.openWindow(targetPath);
+      }
+    })
+  );
+});
+`);
+});
+
+app.get('/api/push/config', (_req, res) => {
+  res.json(getFcmWebConfig());
+});
+
+app.post('/api/push/subscribe', async (req, res) => {
+  const body = (req.body || {}) as Partial<{
+    token: string;
+    platform: 'web' | 'android' | 'ios';
+  }>;
+  const token = (body.token || '').trim();
+  const platform =
+    body.platform === 'android' || body.platform === 'ios' ? body.platform : 'web';
+
+  if (token.length < 20 || token.length > 4096) {
+    res.status(400).json({ error: 'Token FCM perangkat tidak valid.' });
+    return;
+  }
+
+  try {
+    await upsertFcmToken(token, platform, req.headers['user-agent']);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Gagal menyimpan token notifikasi perangkat.',
+    });
+  }
+});
+
+app.post('/api/push/unsubscribe', async (req, res) => {
+  const body = (req.body || {}) as Partial<{ token: string }>;
+  const token = (body.token || '').trim();
+  if (!token) {
+    res.json({ ok: true });
+    return;
+  }
+
+  try {
+    await deleteFcmTokens([token]);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Gagal menghapus token notifikasi perangkat.',
+    });
+  }
 });
 
 // Lightweight keep-alive endpoint for Vercel Cron to prevent Supabase Free tier auto-pause
@@ -1734,7 +2201,7 @@ app.delete('/api/officials/:id', requirePengurusOrSuperadmin, (req, res) => {
   res.json({ ok: true, officialId: id });
 });
 
-app.post('/api/proposals', (req, res) => {
+app.post('/api/proposals', async (req, res) => {
   const body = req.body as Partial<{
     title: string;
     divisionId: DivisionId;
@@ -1814,10 +2281,14 @@ app.post('/api/proposals', (req, res) => {
     payload: { proposal, notification },
   });
 
+  await sendFcmPushForNotification(notification).catch((err) =>
+    console.error('FCM push failed (proposal:created):', err)
+  );
+
   res.status(201).json({ proposal, notification });
 });
 
-app.patch('/api/proposals/:id/status', requirePengurusOrSuperadmin, (req, res) => {
+app.patch('/api/proposals/:id/status', requirePengurusOrSuperadmin, async (req, res) => {
   const { id } = req.params;
   const body = req.body as Partial<{
     status: ProposalStatus;
@@ -1879,6 +2350,10 @@ app.patch('/api/proposals/:id/status', requirePengurusOrSuperadmin, (req, res) =
     type: 'proposal:updated',
     payload: { proposal: updated, notification },
   });
+
+  await sendFcmPushForNotification(notification).catch((err) =>
+    console.error('FCM push failed (proposal:updated):', err)
+  );
 
   res.json({ proposal: updated, notification });
 });
@@ -1987,7 +2462,7 @@ app.post('/api/proposals/:id/support', (req, res) => {
   res.json({ proposal: updated });
 });
 
-app.post('/api/treasury', requirePengurusOrSuperadmin, (req, res) => {
+app.post('/api/treasury', requirePengurusOrSuperadmin, async (req, res) => {
   const body = req.body as Partial<{
     divisionId: DivisionId;
     date: string;
@@ -2044,6 +2519,10 @@ app.post('/api/treasury', requirePengurusOrSuperadmin, (req, res) => {
     type: 'treasury:created',
     payload: { transaction, notification },
   });
+
+  await sendFcmPushForNotification(notification).catch((err) =>
+    console.error('FCM push failed (treasury:created):', err)
+  );
 
   res.status(201).json({ transaction, notification });
 });
@@ -2161,26 +2640,15 @@ app.post('/api/divisions', requirePengurusOrSuperadmin, (req, res) => {
     annualBudget,
   };
 
-  const now = new Date().toISOString();
-  const notification: NotificationItem = {
-    id: `notif-${Date.now()}`,
-    type: 'division_new',
-    title: `Divisi Kas Baru: ${division.shortName}`,
-    message: `${division.name} (Koordinator: ${division.coordinator}) ditambahkan ke daftar kas divisi.`,
-    timestamp: now,
-    read: false,
-  };
-
   state.divisions = [...state.divisions, division];
-  state.notifications = [notification, ...state.notifications].slice(0, 60);
   saveState(state);
 
   broadcastEvent({
     type: 'division:created',
-    payload: { division, notification },
+    payload: { division },
   });
 
-  res.status(201).json({ division, notification });
+  res.status(201).json({ division });
 });
 
 app.patch('/api/divisions/:id', requirePengurusOrSuperadmin, (req, res) => {
@@ -2246,23 +2714,11 @@ app.delete('/api/divisions/:id', requirePengurusOrSuperadmin, (req, res) => {
 
   state.divisions = state.divisions.filter((d) => d.id !== id);
   state.treasury = state.treasury.filter((t) => t.divisionId !== id);
-
-  const now = new Date().toISOString();
-  const notification: NotificationItem = {
-    id: `notif-${Date.now()}`,
-    type: 'division_deleted',
-    title: `Kas Divisi Dihapus: ${target.shortName}`,
-    message: `${target.name} beserta catatan kas divisinya telah dihapus oleh Pengurus RT.`,
-    timestamp: now,
-    read: false,
-  };
-
-  state.notifications = [notification, ...state.notifications].slice(0, 60);
   saveState(state);
 
   broadcastEvent({
     type: 'division:deleted',
-    payload: { divisionId: id, notification },
+    payload: { divisionId: id },
   });
 
   res.json({ ok: true, divisionId: id });
@@ -2293,7 +2749,6 @@ app.post('/api/activities', requirePengurusOrSuperadmin, (req, res) => {
     return;
   }
 
-  const now = new Date().toISOString();
   const activity: ActivityItem = {
     id: `act-${Date.now()}`,
     title: title.slice(0, 140),
@@ -2309,28 +2764,18 @@ app.post('/api/activities', requirePengurusOrSuperadmin, (req, res) => {
     status: 'Terjadwal',
   };
 
-  const notification: NotificationItem = {
-    id: `notif-${Date.now()}`,
-    type: 'activity_new',
-    title: `Info Kegiatan Baru: ${activity.title}`,
-    message: `Dijadwalkan pada ${activity.date} di ${activity.location}.`,
-    timestamp: now,
-    read: false,
-  };
-
   state.activities = [activity, ...state.activities];
-  state.notifications = [notification, ...state.notifications].slice(0, 60);
   saveState(state);
 
   broadcastEvent({
     type: 'activity:created',
-    payload: { activity, notification },
+    payload: { activity },
   });
 
-  res.status(201).json({ activity, notification });
+  res.status(201).json({ activity });
 });
 
-app.post('/api/agenda', requirePengurusOrSuperadmin, (req, res) => {
+app.post('/api/agenda', requirePengurusOrSuperadmin, async (req, res) => {
   const body = req.body as Partial<{
     title: string;
     date: string;
@@ -2383,6 +2828,10 @@ app.post('/api/agenda', requirePengurusOrSuperadmin, (req, res) => {
     type: 'agenda:created',
     payload: { agenda: agendaItem, notification },
   });
+
+  await sendFcmPushForNotification(notification).catch((err) =>
+    console.error('FCM push failed (agenda:created):', err)
+  );
 
   res.status(201).json({ agenda: agendaItem, notification });
 });
@@ -2556,25 +3005,15 @@ app.post('/api/news', requirePengurusOrSuperadmin, (req, res) => {
     imageUrl: body.imageUrl ? body.imageUrl.trim().slice(0, 300) || undefined : undefined,
   };
 
-  const notification: NotificationItem = {
-    id: `notif-${Date.now()}`,
-    type: 'news_new',
-    title: `Berita Baru: ${newsItem.title}`,
-    message: newsItem.summary,
-    timestamp: now,
-    read: false,
-  };
-
   state.news = [newsItem, ...state.news];
-  state.notifications = [notification, ...state.notifications].slice(0, 60);
   saveState(state);
 
   broadcastEvent({
     type: 'news:created',
-    payload: { news: newsItem, notification },
+    payload: { news: newsItem },
   });
 
-  res.status(201).json({ news: newsItem, notification });
+  res.status(201).json({ news: newsItem });
 });
 
 app.patch('/api/news/:id', requirePengurusOrSuperadmin, (req, res) => {
@@ -2644,6 +3083,151 @@ app.delete('/api/news/:id', requirePengurusOrSuperadmin, (req, res) => {
   });
 
   res.json({ ok: true, newsId: id });
+});
+
+app.post('/api/notulen', requirePengurusOrSuperadmin, (req, res) => {
+  const body = (req.body || {}) as Partial<{
+    divisionId: DivisionId;
+    title: string;
+    date: string;
+    time: string;
+    location: string;
+    leader: string;
+    noteTaker: string;
+    attendeesCount: number;
+    agendaTopics: string;
+    decisions: string;
+  }>;
+
+  const title = (body.title || '').trim();
+  const date = (body.date || '').trim();
+  const agendaTopics = (body.agendaTopics || '').trim();
+  const decisions = (body.decisions || '').trim();
+
+  if (!isValidDivision(body.divisionId)) {
+    res.status(400).json({ error: 'Divisi rapat tidak valid.' });
+    return;
+  }
+  if (!title || !date || !decisions) {
+    res.status(400).json({ error: 'Judul rapat, tanggal, dan hasil keputusan wajib diisi.' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const monthTag = date.slice(0, 7) || '2026-11';
+  const seq = String(state.notulen.length + 1).padStart(2, '0');
+  const notulenItem: MeetingNoteItem = {
+    id: `not-${Date.now()}`,
+    referenceCode: `NOT-${monthTag}-${seq}`,
+    divisionId: body.divisionId,
+    title: title.slice(0, 140),
+    date,
+    time: (body.time || '19:30 – 21:00 WIB').trim().slice(0, 40),
+    location: (body.location || state.siteSettings.locationName || 'Balai Warga').trim().slice(0, 100),
+    leader: (body.leader || 'Koordinator Divisi').trim().slice(0, 80),
+    noteTaker: (body.noteTaker || 'Sekretaris RT').trim().slice(0, 80),
+    attendeesCount: Math.max(0, Math.round(Number(body.attendeesCount) || 0)),
+    agendaTopics: (agendaTopics || title).slice(0, 1000),
+    decisions: decisions.slice(0, 2500),
+    createdAt: now,
+  };
+
+  state.notulen = [notulenItem, ...state.notulen].sort((a, b) =>
+    b.date.localeCompare(a.date)
+  );
+  saveState(state);
+
+  broadcastEvent({
+    type: 'notulen:created',
+    payload: { notulen: notulenItem },
+  });
+
+  res.status(201).json({ notulen: notulenItem });
+});
+
+app.patch('/api/notulen/:id', requirePengurusOrSuperadmin, (req, res) => {
+  const { id } = req.params;
+  const idx = state.notulen.findIndex((n) => n.id === id);
+  if (idx === -1) {
+    res.status(404).json({ error: 'Notulen rapat tidak ditemukan.' });
+    return;
+  }
+
+  const existing = state.notulen[idx];
+  const body = (req.body || {}) as Partial<{
+    divisionId: DivisionId;
+    title: string;
+    date: string;
+    time: string;
+    location: string;
+    leader: string;
+    noteTaker: string;
+    attendeesCount: number;
+    agendaTopics: string;
+    decisions: string;
+  }>;
+
+  const divisionId = body.divisionId ?? existing.divisionId;
+  if (!isValidDivision(divisionId)) {
+    res.status(400).json({ error: 'Divisi rapat tidak valid.' });
+    return;
+  }
+
+  const title = (body.title ?? existing.title).trim();
+  const date = (body.date ?? existing.date).trim();
+  const decisions = (body.decisions ?? existing.decisions).trim();
+  if (!title || !date || !decisions) {
+    res.status(400).json({ error: 'Judul rapat, tanggal, dan hasil keputusan wajib diisi.' });
+    return;
+  }
+
+  const updated: MeetingNoteItem = {
+    ...existing,
+    divisionId,
+    title: title.slice(0, 140),
+    date,
+    time: ((body.time ?? existing.time) || '19:30 – 21:00 WIB').trim().slice(0, 40),
+    location: ((body.location ?? existing.location) || state.siteSettings.locationName).trim().slice(0, 100),
+    leader: ((body.leader ?? existing.leader) || 'Koordinator Divisi').trim().slice(0, 80),
+    noteTaker: ((body.noteTaker ?? existing.noteTaker) || 'Sekretaris RT').trim().slice(0, 80),
+    attendeesCount:
+      body.attendeesCount !== undefined
+        ? Math.max(0, Math.round(Number(body.attendeesCount) || 0))
+        : existing.attendeesCount,
+    agendaTopics: ((body.agendaTopics ?? existing.agendaTopics) || title).trim().slice(0, 1000),
+    decisions: decisions.slice(0, 2500),
+  };
+
+  state.notulen = state.notulen
+    .map((n) => (n.id === id ? updated : n))
+    .sort((a, b) => b.date.localeCompare(a.date));
+  saveState(state);
+
+  broadcastEvent({
+    type: 'notulen:updated',
+    payload: { notulen: updated },
+  });
+
+  res.json({ notulen: updated });
+});
+
+app.delete('/api/notulen/:id', requirePengurusOrSuperadmin, (req, res) => {
+  const { id } = req.params;
+  const exists = state.notulen.some((n) => n.id === id);
+  if (!exists) {
+    res.status(404).json({ error: 'Notulen rapat tidak ditemukan.' });
+    return;
+  }
+
+  state.notulen = state.notulen.filter((n) => n.id !== id);
+  saveState(state);
+
+  broadcastEvent({
+    type: 'notulen:deleted',
+    payload: { notulenId: id },
+  });
+
+  res.json({ ok: true, notulenId: id });
 });
 
 app.patch('/api/notifications/read', (req, res) => {

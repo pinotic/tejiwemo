@@ -2,6 +2,7 @@ export type NavTab =
   | 'ringkasan'
   | 'berita'
   | 'kas'
+  | 'notulen'
   | 'usulan'
   | 'agenda';
 
@@ -16,6 +17,7 @@ const NAV_ITEMS: { id: NavTab; label: string }[] = [
   { id: 'ringkasan', label: 'Home' },
   { id: 'berita', label: 'Berita' },
   { id: 'kas', label: 'Kas Divisi' },
+  { id: 'notulen', label: 'Notulen' },
   { id: 'usulan', label: 'Usulan Warga' },
   { id: 'agenda', label: 'Agenda' },
 ];

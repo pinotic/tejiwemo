@@ -1,6 +1,12 @@
-import { Bell, CheckCheck, Eye, Radio, X } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { Bell, BellOff, BellRing, CheckCheck, Eye, Radio, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ConnectionState } from '../hooks/useRtRealtime';
+import {
+  type BrowserPushState,
+  detectBrowserPushState,
+  subscribeWebPush,
+  unsubscribeWebPush,
+} from '../lib/fcm';
 import { formatRelativeTime, getStatusMeta } from '../lib/format';
 import type { NotificationItem } from '../types';
 
@@ -28,6 +34,54 @@ export function NotificationDrawer({
   topOffsetClass = 'top-0 md:top-16',
 }: NotificationDrawerProps) {
   const [filter, setFilter] = useState<'all' | 'unread' | 'watched'>('all');
+  const [pushState, setPushState] = useState<BrowserPushState>('checking');
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushFeedback, setPushFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    setPushFeedback(null);
+    detectBrowserPushState()
+      .then(({ state }) => {
+        if (active) setPushState(state);
+      })
+      .catch(() => {
+        if (active) setPushState('unsupported');
+      });
+    return () => {
+      active = false;
+    };
+  }, [open]);
+
+  const handleEnablePush = async () => {
+    setPushBusy(true);
+    setPushFeedback(null);
+    try {
+      await subscribeWebPush();
+      setPushState('subscribed');
+      setPushFeedback('Notifikasi push berhasil diaktifkan untuk perangkat ini.');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Gagal mengaktifkan notifikasi push.';
+      setPushFeedback(msg);
+      const next = await detectBrowserPushState().catch(() => null);
+      if (next) setPushState(next.state);
+    } finally {
+      setPushBusy(false);
+    }
+  };
+
+  const handleDisablePush = async () => {
+    setPushBusy(true);
+    setPushFeedback(null);
+    try {
+      await unsubscribeWebPush();
+      setPushState('prompt');
+      setPushFeedback('Notifikasi push perangkat ini dinonaktifkan.');
+    } finally {
+      setPushBusy(false);
+    }
+  };
 
   const filtered = useMemo(() => {
     return notifications.filter((n) => {
@@ -93,6 +147,81 @@ export function NotificationDrawer({
             <X className="w-4 h-4" />
           </button>
         </div>
+
+        {/* Device Push Opt-In Bar */}
+        {pushState !== 'checking' && (
+          <div className="px-5 py-3 border-b border-slate-100 bg-slate-50/70">
+            {pushState === 'prompt' && (
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800">
+                    <BellRing className="w-3.5 h-3.5 text-emerald-700 shrink-0" aria-hidden="true" />
+                    <span>Notifikasi Push Perangkat</span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-slate-500 leading-snug">
+                    Terima info Agenda, Usulan Warga & Laporan Kas meski browser ditutup.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={pushBusy}
+                  onClick={handleEnablePush}
+                  className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-800 hover:bg-emerald-900 disabled:opacity-60 text-white transition-colors"
+                >
+                  {pushBusy ? 'Memproses...' : 'Aktifkan'}
+                </button>
+              </div>
+            )}
+
+            {pushState === 'subscribed' && (
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-xs text-emerald-800 font-medium min-w-0">
+                  <BellRing className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span className="truncate">Notifikasi push aktif di perangkat ini</span>
+                </div>
+                <button
+                  type="button"
+                  disabled={pushBusy}
+                  onClick={handleDisablePush}
+                  className="shrink-0 text-[11px] font-medium text-slate-500 hover:text-slate-800 disabled:opacity-60"
+                >
+                  {pushBusy ? '...' : 'Nonaktifkan'}
+                </button>
+              </div>
+            )}
+
+            {pushState === 'denied' && (
+              <div className="flex items-start gap-2 text-[11px] text-amber-800 leading-snug">
+                <BellOff className="w-3.5 h-3.5 shrink-0 mt-0.5" aria-hidden="true" />
+                <span>
+                  Izin notifikasi diblokir browser. Aktifkan lewat ikon pengaturan di bilah alamat untuk menerima push.
+                </span>
+              </div>
+            )}
+
+            {pushState === 'unconfigured' && (
+              <div className="flex items-start gap-2 text-[11px] text-slate-500 leading-snug">
+                <Bell className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-400" aria-hidden="true" />
+                <span>
+                  Push notifikasi perangkat siap diaktifkan setelah kunci Firebase (FCM) diisi pada pengaturan server.
+                </span>
+              </div>
+            )}
+
+            {pushState === 'unsupported' && (
+              <div className="flex items-start gap-2 text-[11px] text-slate-500 leading-snug">
+                <BellOff className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-400" aria-hidden="true" />
+                <span>
+                  Browser ini belum mendukung push notifikasi (di iPhone/iPad, tambahkan web ke Layar Utama terlebih dahulu).
+                </span>
+              </div>
+            )}
+
+            {pushFeedback && (
+              <p className="mt-1.5 text-[11px] text-slate-600 leading-snug">{pushFeedback}</p>
+            )}
+          </div>
+        )}
 
         {/* Filter Controls */}
         <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between gap-2">

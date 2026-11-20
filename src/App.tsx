@@ -5,6 +5,7 @@ import { KasDivisiSection } from './components/KasDivisiSection';
 import { LiveToastStack } from './components/LiveToastStack';
 import { MobileBottomNav } from './components/MobileBottomNav';
 import { NotificationDrawer } from './components/NotificationDrawer';
+import { NotulenRapatSection } from './components/NotulenRapatSection';
 import { OverviewSection } from './components/OverviewSection';
 import { PengurusLoginPage } from './components/PengurusLoginPage';
 import { PengurusPortalPage } from './components/PengurusPortalPage';
@@ -14,6 +15,7 @@ import { UsulanWargaSection } from './components/UsulanWargaSection';
 import { WorkspaceToolbar } from './components/WorkspaceToolbar';
 import { useRtRealtime } from './hooks/useRtRealtime';
 import { fetchCurrentUser, logoutSession } from './lib/auth';
+import { syncExistingWebPushSubscription } from './lib/fcm';
 import type { AuthUser } from './types';
 
 type PortalRoute = 'warga' | 'pengurus' | 'superadmin';
@@ -73,6 +75,36 @@ export default function App() {
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tabParam = params.get('tab');
+    const proposalParam = params.get('proposalId');
+    const validTabs: NavTab[] = ['ringkasan', 'berita', 'kas', 'notulen', 'usulan', 'agenda'];
+    if (tabParam && validTabs.includes(tabParam as NavTab)) {
+      setActiveTab(tabParam as NavTab);
+    }
+    if (proposalParam) {
+      setSelectedProposalId(proposalParam);
+    }
+    if (tabParam || proposalParam) {
+      window.history.replaceState({}, '', window.location.pathname || '/');
+    }
+  }, []);
+
+  useEffect(() => {
+    let cleanup = () => {};
+    syncExistingWebPushSubscription(() => {
+      refreshState();
+    })
+      .then((unsub) => {
+        cleanup = unsub;
+      })
+      .catch(() => undefined);
+    return () => {
+      cleanup();
+    };
+  }, [refreshState]);
 
   useEffect(() => {
     const fullTitle = `${state.siteSettings.webTitle} · ${state.siteSettings.regionIdentity}`;
@@ -267,6 +299,13 @@ export default function App() {
               />
             )}
 
+            {activeTab === 'notulen' && (
+              <NotulenRapatSection
+                divisions={state.divisions}
+                notulen={state.notulen}
+              />
+            )}
+
             {activeTab === 'usulan' && (
               <UsulanWargaSection
                 proposals={state.proposals}
@@ -314,6 +353,13 @@ export default function App() {
               className="hover:text-slate-900 transition-colors"
             >
               Transparansi Kas
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('notulen')}
+              className="hover:text-slate-900 transition-colors"
+            >
+              Notulen Rapat
             </button>
             <button
               type="button"

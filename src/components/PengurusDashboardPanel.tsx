@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronUp,
   ClipboardList,
+  FileText,
   FolderPlus,
   Globe,
   Image as ImageIcon,
@@ -33,6 +34,7 @@ import type {
   DivisionId,
   DivisionInfo,
   HeroConfig,
+  MeetingNoteItem,
   NewsItem,
   ProposalItem,
   ProposalStatus,
@@ -41,12 +43,14 @@ import type {
   SiteSettings,
   TreasuryTransaction,
 } from '../types';
+import { PengurusNotulenPanel } from './PengurusNotulenPanel';
 import { SuperadminSiteSettingsPanel } from './SuperadminSiteSettingsPanel';
 import { SuperadminUsersPanel } from './SuperadminUsersPanel';
 
 export type DashboardTool =
   | 'input_kas'
   | 'kelola_divisi'
+  | 'kelola_notulen'
   | 'tambah_agenda'
   | 'buat_berita'
   | 'kelola_usulan'
@@ -65,6 +69,7 @@ interface PengurusDashboardPanelProps {
   treasury: TreasuryTransaction[];
   agenda: AgendaItem[];
   news: NewsItem[];
+  notulen: MeetingNoteItem[];
   proposals: ProposalItem[];
 }
 
@@ -108,6 +113,7 @@ export function PengurusDashboardPanel({
   treasury,
   agenda,
   news,
+  notulen,
   proposals,
 }: PengurusDashboardPanelProps) {
   // Input / Edit Kas states
@@ -2615,6 +2621,16 @@ export function PengurusDashboardPanel({
       {activeTool === 'akun_pengurus' && authUser.role === 'superadmin' && (
         <SuperadminUsersPanel currentUser={authUser} />
       )}
+
+      {/* Tool 10: Notulen Rapat Per Divisi */}
+      {activeTool === 'kelola_notulen' && (
+        <PengurusNotulenPanel
+          authUser={authUser}
+          siteSettings={siteSettings}
+          divisions={divisions}
+          notulen={notulen}
+        />
+      )}
     </section>
   );
 }
@@ -2637,6 +2653,12 @@ export const PENGURUS_TOOL_ITEMS: Array<{
     label: 'Divisi Kas',
     description: 'Kelola divisi & anggaran tahunan',
     icon: FolderPlus,
+  },
+  {
+    id: 'kelola_notulen',
+    label: 'Notulen Rapat',
+    description: 'Catat, edit & arsipkan notulen rapat per divisi',
+    icon: FileText,
   },
   {
     id: 'tambah_agenda',
