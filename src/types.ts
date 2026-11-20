@@ -152,6 +152,21 @@ export interface NotificationItem {
   read: boolean;
 }
 
+export type UrgentAlertCategory = 'bencana' | 'kebakaran' | 'kematian';
+
+export interface UrgentAlertItem {
+  id: string;
+  category: UrgentAlertCategory;
+  title: string;
+  deceasedName?: string;
+  location?: string;
+  message: string;
+  createdBy: string;
+  createdAt: string;
+  active: boolean;
+  resolvedAt?: string;
+}
+
 export interface SiteSettings {
   webTitle: string;
   regionCode: string;
@@ -171,6 +186,7 @@ export interface RtSnapshotState {
   news: NewsItem[];
   notulen: MeetingNoteItem[];
   notifications: NotificationItem[];
+  alerts: UrgentAlertItem[];
 }
 
 export type AuthRole = 'pengurus' | 'superadmin';
@@ -239,4 +255,7 @@ export type RtRealtimeEvent =
     }
   | { type: 'notulen:updated'; payload: { notulen: MeetingNoteItem } }
   | { type: 'notulen:deleted'; payload: { notulenId: string } }
+  | { type: 'alert:created'; payload: { alert: UrgentAlertItem } }
+  | { type: 'alert:updated'; payload: { alert: UrgentAlertItem } }
+  | { type: 'alert:deleted'; payload: { alertId: string } }
   | { type: 'notifications:read'; payload: { id?: string; all?: boolean } };

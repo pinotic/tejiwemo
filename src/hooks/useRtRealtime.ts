@@ -34,9 +34,11 @@ const EMPTY_STATE: RtSnapshotState = {
   news: [],
   notulen: [],
   notifications: [],
+  alerts: [],
 };
 
 const READ_NOTIFICATIONS_KEY = 'portal_warga_read_notifications';
+const ACK_ALERTS_KEY = 'portal_warga_ack_alerts';
 
 const ALLOWED_NOTIFICATION_TYPES = new Set<NotificationItem['type']>([
   'agenda_new',
@@ -62,6 +64,28 @@ function persistReadNotificationIds(ids: Set<string>): void {
   try {
     const list = Array.from(ids).slice(-200);
     localStorage.setItem(READ_NOTIFICATIONS_KEY, JSON.stringify(list));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function loadAckAlertIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(ACK_ALERTS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? new Set(parsed.filter((id): id is string => typeof id === 'string'))
+      : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function persistAckAlertIds(ids: Set<string>): void {
+  try {
+    const list = Array.from(ids).slice(-100);
+    localStorage.setItem(ACK_ALERTS_KEY, JSON.stringify(list));
   } catch {
     // Ignore storage quota errors
   }
@@ -103,6 +127,9 @@ export function useRtRealtime() {
   const reconnectTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   const readIdsRef = useRef<Set<string>>(loadReadNotificationIds());
+  const [acknowledgedAlertIds, setAcknowledgedAlertIds] = useState<Set<string>>(() =>
+    loadAckAlertIds()
+  );
 
   const pushToast = useCallback((notification: NotificationItem) => {
     if (!ALLOWED_NOTIFICATION_TYPES.has(notification.type)) return;
@@ -145,6 +172,7 @@ export function useRtRealtime() {
         setState({
           ...data,
           notulen: Array.isArray(data.notulen) ? data.notulen : [],
+          alerts: Array.isArray(data.alerts) ? data.alerts : [],
           notifications: applyLocalReadState(
             Array.isArray(data.notifications) ? data.notifications : [],
             readIdsRef.current
@@ -172,6 +200,7 @@ export function useRtRealtime() {
             hero: event.payload.hero || EMPTY_STATE.hero,
             news: Array.isArray(event.payload.news) ? event.payload.news : [],
             notulen: Array.isArray(event.payload.notulen) ? event.payload.notulen : [],
+            alerts: Array.isArray(event.payload.alerts) ? event.payload.alerts : [],
             notifications: applyLocalReadState(
               Array.isArray(event.payload.notifications) ? event.payload.notifications : [],
               readIdsRef.current
@@ -346,6 +375,24 @@ export function useRtRealtime() {
             notulen: prev.notulen.filter((n) => n.id !== event.payload.notulenId),
           }));
           break;
+        case 'alert:created':
+          setState((prev) => ({
+            ...prev,
+            alerts: mergeById(prev.alerts, event.payload.alert, true),
+          }));
+          break;
+        case 'alert:updated':
+          setState((prev) => ({
+            ...prev,
+            alerts: mergeById(prev.alerts, event.payload.alert, false),
+          }));
+          break;
+        case 'alert:deleted':
+          setState((prev) => ({
+            ...prev,
+            alerts: prev.alerts.filter((a) => a.id !== event.payload.alertId),
+          }));
+          break;
         case 'notifications:read':
           setState((prev) => ({
             ...prev,
@@ -396,6 +443,7 @@ export function useRtRealtime() {
               hero: nextRow.data.hero || EMPTY_STATE.hero,
               news: Array.isArray(nextRow.data.news) ? nextRow.data.news : [],
               notulen: Array.isArray(nextRow.data.notulen) ? nextRow.data.notulen : [],
+              alerts: Array.isArray(nextRow.data.alerts) ? nextRow.data.alerts : [],
               notifications: applyLocalReadState(
                 Array.isArray(nextRow.data.notifications) ? nextRow.data.notifications : [],
                 readIdsRef.current
@@ -527,6 +575,16 @@ export function useRtRealtime() {
     });
   }, []);
 
+  const acknowledgeAlert = useCallback((alertId: string) => {
+    setAcknowledgedAlertIds((prev) => {
+      if (prev.has(alertId)) return prev;
+      const next = new Set(prev);
+      next.add(alertId);
+      persistAckAlertIds(next);
+      return next;
+    });
+  }, []);
+
   return {
     state,
     loading,
@@ -538,6 +596,8 @@ export function useRtRealtime() {
     toggleWatchProposal,
     markNotificationRead,
     markAllNotificationsRead,
+    acknowledgedAlertIds,
+    acknowledgeAlert,
     refreshState: fetchInitialState,
   };
 }

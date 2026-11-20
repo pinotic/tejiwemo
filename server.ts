@@ -29,6 +29,8 @@ import type {
   RtSnapshotState,
   SiteSettings,
   TreasuryTransaction,
+  UrgentAlertCategory,
+  UrgentAlertItem,
 } from './src/types.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -380,6 +382,143 @@ async function sendFcmPushForNotification(
         priority: 'high',
         notification: {
           channelId: 'portal_warga_default',
+        },
+      },
+    });
+
+    totalSuccess += batchResult.successCount;
+    totalFailure += batchResult.failureCount;
+
+    batchResult.responses.forEach((resp, idx) => {
+      if (!resp.success && resp.error) {
+        const code = resp.error.code;
+        if (!firstError) {
+          firstError = `${code}: ${resp.error.message}`;
+        }
+        if (
+          code === 'messaging/registration-token-not-registered' ||
+          code === 'messaging/invalid-registration-token'
+        ) {
+          staleTokens.push(chunk[idx]);
+        }
+      }
+    });
+  }
+
+  lastFcmDiagnostic = {
+    at: new Date().toISOString(),
+    successCount: totalSuccess,
+    failureCount: totalFailure,
+    error: firstError,
+  };
+
+  if (staleTokens.length > 0) {
+    await deleteFcmTokens(staleTokens).catch(() => undefined);
+  }
+}
+
+function buildAlertPushCopy(alert: UrgentAlertItem): { title: string; body: string } {
+  let prefix = '[PERINGATAN DARURAT]';
+  if (alert.category === 'kebakaran') {
+    prefix = '[SIAGA KEBAKARAN]';
+  } else if (alert.category === 'bencana') {
+    prefix = '[PERINGATAN BENCANA]';
+  } else if (alert.category === 'kematian') {
+    prefix = '[BERITA DUKA]';
+  }
+
+  const pushTitle = `${prefix} ${alert.title}`.slice(0, 110);
+  const parts: string[] = [];
+  if (alert.category === 'kematian' && alert.deceasedName) {
+    parts.push(`Telah berpulang: ${alert.deceasedName}`);
+  }
+  if (alert.location) {
+    parts.push(`Lokasi: ${alert.location}`);
+  }
+  parts.push(alert.message);
+  return {
+    title: pushTitle,
+    body: parts.join(' · ').slice(0, 220),
+  };
+}
+
+async function sendFcmPushForAlert(
+  alert: UrgentAlertItem,
+  req?: express.Request
+): Promise<void> {
+  if (!fcmMessaging) {
+    lastFcmDiagnostic = {
+      at: new Date().toISOString(),
+      successCount: 0,
+      failureCount: 0,
+      error: fcmInitError || 'Firebase Admin SDK belum terkonfigurasi di server.',
+    };
+    return;
+  }
+
+  const tokens = await listFcmTokens();
+  if (tokens.length === 0) {
+    lastFcmDiagnostic = {
+      at: new Date().toISOString(),
+      successCount: 0,
+      failureCount: 0,
+      error: 'Belum ada token perangkat terdaftar di tabel fcm_tokens.',
+    };
+    return;
+  }
+
+  const targetPath = `/?alertId=${encodeURIComponent(alert.id)}`;
+  const httpsOrigin = resolvePublicHttpsOrigin(req);
+  const iconPath = '/assets/aistudio/500309821_1300971965363211_2221899409798109426_n__1__55125c15.png';
+  const iconUrl = httpsOrigin ? `${httpsOrigin}${iconPath}` : iconPath;
+  const { title, body } = buildAlertPushCopy(alert);
+  const staleTokens: string[] = [];
+  let totalSuccess = 0;
+  let totalFailure = 0;
+  let firstError: string | null = null;
+
+  for (let i = 0; i < tokens.length; i += 500) {
+    const chunk = tokens.slice(i, i + 500);
+    const batchResult = await fcmMessaging.sendEachForMulticast({
+      tokens: chunk,
+      notification: {
+        title,
+        body,
+      },
+      data: {
+        type: 'urgent_alert',
+        alertId: alert.id,
+        category: alert.category,
+        url: targetPath,
+        forceDisplay: '1',
+        title,
+        body,
+      },
+      webpush: {
+        headers: {
+          Urgency: 'high',
+        },
+        ...(httpsOrigin
+          ? {
+              fcmOptions: {
+                link: `${httpsOrigin}${targetPath}`,
+              },
+            }
+          : {}),
+        notification: {
+          title,
+          body,
+          icon: iconUrl,
+          badge: iconUrl,
+          tag: alert.id,
+          requireInteraction: true,
+          renotify: true,
+        },
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          channelId: 'portal_warga_urgent',
         },
       },
     });
@@ -1133,6 +1272,7 @@ function createSeedState(): RtSnapshotState {
         read: true,
       },
     ],
+    alerts: [],
   };
 }
 
@@ -1227,6 +1367,10 @@ function normalizeLoadedState(parsed: RtSnapshotState): {
       parsed.notifications = filteredNotifications;
       mutated = true;
     }
+  }
+  if (!Array.isArray(parsed.alerts)) {
+    parsed.alerts = [];
+    mutated = true;
   }
   return { normalized: parsed, mutated };
 }
@@ -1703,10 +1847,14 @@ messaging.onBackgroundMessage((payload) => {
   const data = (payload && payload.data) || {};
   const title = data.title || 'Portal Warga RT 01 Dinoyo';
   const body = data.body || 'Ada pembaruan baru di Portal Warga.';
+  const isUrgent = data.type === 'urgent_alert';
   self.registration.showNotification(title, {
     body,
     icon: '${iconUrl}',
     badge: '${iconUrl}',
+    requireInteraction: isUrgent,
+    renotify: isUrgent,
+    tag: data.alertId || undefined,
     data,
   });
 });
@@ -3385,6 +3533,124 @@ app.patch('/api/notifications/read', (req, res) => {
     return;
   }
   res.status(400).json({ error: 'Parameter id atau all diperlukan.' });
+});
+
+const VALID_ALERT_CATEGORIES: UrgentAlertCategory[] = [
+  'bencana',
+  'kebakaran',
+  'kematian',
+];
+
+function defaultAlertTitle(category: UrgentAlertCategory, deceasedName?: string): string {
+  if (category === 'kebakaran') return 'Siaga Darurat Kebakaran';
+  if (category === 'bencana') return 'Peringatan Darurat Bencana';
+  return deceasedName ? `Berita Duka: ${deceasedName}` : 'Berita Duka Warga';
+}
+
+app.post('/api/alerts', requirePengurusOrSuperadmin, async (req: AuthedRequest, res) => {
+  const body = (req.body || {}) as Partial<{
+    category: UrgentAlertCategory;
+    title: string;
+    deceasedName: string;
+    location: string;
+    message: string;
+  }>;
+
+  const category = body.category;
+  if (!category || !VALID_ALERT_CATEGORIES.includes(category)) {
+    res.status(400).json({
+      error: 'Kategori alert harus Bencana, Kebakaran, atau Kematian.',
+    });
+    return;
+  }
+
+  const message = (body.message || '').trim();
+  if (!message) {
+    res.status(400).json({ error: 'Pesan atau instruksi darurat wajib diisi.' });
+    return;
+  }
+
+  const deceasedName =
+    category === 'kematian'
+      ? (body.deceasedName || '').trim().slice(0, 100) || undefined
+      : undefined;
+  const location = (body.location || '').trim().slice(0, 120) || undefined;
+  const rawTitle = (body.title || '').trim();
+  const title = (rawTitle || defaultAlertTitle(category, deceasedName)).slice(0, 140);
+
+  const alertItem: UrgentAlertItem = {
+    id: `alert-${Date.now()}`,
+    category,
+    title,
+    deceasedName,
+    location,
+    message: message.slice(0, 1000),
+    createdBy: req.authUser?.displayName || 'Pengurus RT',
+    createdAt: new Date().toISOString(),
+    active: true,
+  };
+
+  state.alerts = [alertItem, ...(state.alerts || [])].slice(0, 50);
+  saveState(state);
+
+  broadcastEvent({
+    type: 'alert:created',
+    payload: { alert: alertItem },
+  });
+
+  await sendFcmPushForAlert(alertItem, req).catch((err) =>
+    console.error('FCM alert push error:', err)
+  );
+
+  res.status(201).json({ alert: alertItem });
+});
+
+app.patch('/api/alerts/:id/resolve', requirePengurusOrSuperadmin, (req, res) => {
+  const { id } = req.params;
+  const idx = (state.alerts || []).findIndex((a) => a.id === id);
+  if (idx === -1) {
+    res.status(404).json({ error: 'Alert prioritas tidak ditemukan.' });
+    return;
+  }
+
+  const body = (req.body || {}) as Partial<{ active: boolean }>;
+  const nextActive = typeof body.active === 'boolean' ? body.active : false;
+  const existing = state.alerts[idx];
+
+  const updated: UrgentAlertItem = {
+    ...existing,
+    active: nextActive,
+    resolvedAt: nextActive ? undefined : new Date().toISOString(),
+  };
+
+  state.alerts = state.alerts.map((a) => (a.id === id ? updated : a));
+  saveState(state);
+
+  broadcastEvent({
+    type: 'alert:updated',
+    payload: { alert: updated },
+  });
+
+  res.json({ alert: updated });
+});
+
+app.delete('/api/alerts/:id', requirePengurusOrSuperadmin, (req, res) => {
+  const { id } = req.params;
+  const exists = (state.alerts || []).some((a) => a.id === id);
+  if (!exists) {
+    res.status(404).json({ error: 'Alert prioritas tidak ditemukan.' });
+    return;
+  }
+
+  state.alerts = state.alerts.filter((a) => a.id !== id);
+  saveState(state);
+
+  broadcastEvent({
+    type: 'alert:deleted',
+    payload: { alertId: id },
+  });
+
+  res.json({ ok: true, alertId: id });
 });
 
 async function startServer() {

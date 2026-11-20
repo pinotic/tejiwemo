@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   CalendarPlus,
   CheckCircle2,
   ChevronDown,
@@ -42,13 +43,16 @@ import type {
   RtOfficial,
   SiteSettings,
   TreasuryTransaction,
+  UrgentAlertItem,
 } from '../types';
+import { PengurusAlertPanel } from './PengurusAlertPanel';
 import { PengurusNotulenPanel } from './PengurusNotulenPanel';
 import { SuperadminSiteSettingsPanel } from './SuperadminSiteSettingsPanel';
 import { SuperadminUsersPanel } from './SuperadminUsersPanel';
 
 export type DashboardTool =
   | 'input_kas'
+  | 'alert_prioritas'
   | 'kelola_divisi'
   | 'kelola_notulen'
   | 'tambah_agenda'
@@ -71,6 +75,7 @@ interface PengurusDashboardPanelProps {
   news: NewsItem[];
   notulen: MeetingNoteItem[];
   proposals: ProposalItem[];
+  alerts: UrgentAlertItem[];
 }
 
 const HERO_PRESETS = [
@@ -115,6 +120,7 @@ export function PengurusDashboardPanel({
   news,
   notulen,
   proposals,
+  alerts,
 }: PengurusDashboardPanelProps) {
   // Input / Edit Kas states
   const [editingTxId, setEditingTxId] = useState<string | null>(null);
@@ -2631,6 +2637,15 @@ export function PengurusDashboardPanel({
           notulen={notulen}
         />
       )}
+
+      {/* Tool 11: Alert Prioritas Darurat (Bencana, Kebakaran, Kematian) */}
+      {activeTool === 'alert_prioritas' && (
+        <PengurusAlertPanel
+          authUser={authUser}
+          siteSettings={siteSettings}
+          alerts={alerts}
+        />
+      )}
     </section>
   );
 }
@@ -2647,6 +2662,12 @@ export const PENGURUS_TOOL_ITEMS: Array<{
     label: 'Kas Divisi',
     description: 'Tambah, edit & hapus mutasi kas',
     icon: Wallet,
+  },
+  {
+    id: 'alert_prioritas',
+    label: 'Alert Prioritas',
+    description: 'Siarkan alert darurat Bencana, Kebakaran & Kematian',
+    icon: AlertTriangle,
   },
   {
     id: 'kelola_divisi',

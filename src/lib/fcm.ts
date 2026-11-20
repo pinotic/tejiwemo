@@ -290,10 +290,13 @@ function attachForegroundListener(
       try {
         const reg = registration || (await navigator.serviceWorker.getRegistration('/'));
         if (reg) {
+          const isUrgent = payload.data?.type === 'urgent_alert';
           await reg.showNotification(title, {
             body,
             icon,
             badge: icon,
+            requireInteraction: isUrgent,
+            tag: payload.data?.alertId || (isUrgent ? 'portal-warga-urgent' : undefined),
             data: payload.data || {},
           });
           return;

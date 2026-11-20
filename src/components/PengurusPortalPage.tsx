@@ -269,6 +269,7 @@ export function PengurusPortalPage({
               news={state.news}
               notulen={state.notulen}
               proposals={state.proposals}
+              alerts={state.alerts}
             />
           </div>
         </div>

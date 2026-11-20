@@ -11,6 +11,7 @@ import { PengurusLoginPage } from './components/PengurusLoginPage';
 import { PengurusPortalPage } from './components/PengurusPortalPage';
 import { ProposalFormModal } from './components/ProposalFormModal';
 import { type NavTab, TopBar } from './components/TopBar';
+import { ActiveAlertBanner, UrgentAlertModal } from './components/UrgentAlertOverlay';
 import { UsulanWargaSection } from './components/UsulanWargaSection';
 import { WorkspaceToolbar } from './components/WorkspaceToolbar';
 import { useRtRealtime } from './hooks/useRtRealtime';
@@ -39,6 +40,8 @@ export default function App() {
     toggleWatchProposal,
     markNotificationRead,
     markAllNotificationsRead,
+    acknowledgedAlertIds,
+    acknowledgeAlert,
     refreshState,
   } = useRtRealtime();
 
@@ -50,6 +53,7 @@ export default function App() {
   const [proposalFormOpen, setProposalFormOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [selectedProposalId, setSelectedProposalId] = useState<string | null>(null);
+  const [manualAlertId, setManualAlertId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -81,6 +85,7 @@ export default function App() {
       const params = new URLSearchParams(searchString);
       const tabParam = params.get('tab');
       const proposalParam = params.get('proposalId');
+      const alertParam = params.get('alertId');
       const validTabs: NavTab[] = ['ringkasan', 'berita', 'kas', 'notulen', 'usulan', 'agenda'];
       if (tabParam && validTabs.includes(tabParam as NavTab)) {
         setPortalRoute('warga');
@@ -90,6 +95,10 @@ export default function App() {
         setPortalRoute('warga');
         setActiveTab('usulan');
         setSelectedProposalId(proposalParam);
+      }
+      if (alertParam) {
+        setPortalRoute('warga');
+        setManualAlertId(alertParam);
       }
     };
 
@@ -157,6 +166,11 @@ export default function App() {
   }, []);
 
   const unreadCount = state.notifications.filter((n) => !n.read).length;
+  const activeAlerts = (state.alerts || []).filter((a) => a.active);
+  const modalAlert =
+    (manualAlertId ? state.alerts.find((a) => a.id === manualAlertId) : null) ||
+    activeAlerts.find((a) => !acknowledgedAlertIds.has(a.id)) ||
+    null;
 
   const handleOpenNotification = useCallback(
     (notification: NotificationItem) => {
@@ -282,6 +296,11 @@ export default function App() {
         unreadCount={unreadCount}
         onOpenNotifications={() => setNotificationsOpen((prev) => !prev)}
         connectionState={connectionState}
+      />
+
+      <ActiveAlertBanner
+        activeAlerts={activeAlerts}
+        onOpenAlert={(id) => setManualAlertId(id)}
       />
 
       <main className="flex-1 w-full max-w-[1200px] mx-auto px-4 sm:px-6 py-8 sm:py-10">
@@ -479,6 +498,18 @@ export default function App() {
         toasts={toasts}
         onDismiss={dismissToast}
         onOpenNotification={handleOpenNotification}
+      />
+
+      <UrgentAlertModal
+        alert={modalAlert}
+        activeCount={activeAlerts.length}
+        regionIdentity={state.siteSettings.regionIdentity}
+        onAcknowledge={(id) => {
+          acknowledgeAlert(id);
+          if (manualAlertId === id) {
+            setManualAlertId(null);
+          }
+        }}
       />
     </div>
   );
