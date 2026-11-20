@@ -1721,7 +1721,7 @@ self.addEventListener('notificationclick', (event) => {
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
       for (const client of clientList) {
         if ('focus' in client) {
-          client.navigate(targetPath).catch(() => {});
+          client.postMessage({ type: 'PORTAL_NAVIGATE', url: targetPath });
           return client.focus();
         }
       }

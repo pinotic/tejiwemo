@@ -16,7 +16,7 @@ import { WorkspaceToolbar } from './components/WorkspaceToolbar';
 import { useRtRealtime } from './hooks/useRtRealtime';
 import { fetchCurrentUser, logoutSession } from './lib/auth';
 import { syncExistingWebPushSubscription } from './lib/fcm';
-import type { AuthUser } from './types';
+import type { AuthUser, NotificationItem } from './types';
 
 type PortalRoute = 'warga' | 'pengurus' | 'superadmin';
 
@@ -77,19 +77,46 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const tabParam = params.get('tab');
-    const proposalParam = params.get('proposalId');
-    const validTabs: NavTab[] = ['ringkasan', 'berita', 'kas', 'notulen', 'usulan', 'agenda'];
-    if (tabParam && validTabs.includes(tabParam as NavTab)) {
-      setActiveTab(tabParam as NavTab);
-    }
-    if (proposalParam) {
-      setSelectedProposalId(proposalParam);
-    }
-    if (tabParam || proposalParam) {
+    const applyDeepLink = (searchString: string) => {
+      const params = new URLSearchParams(searchString);
+      const tabParam = params.get('tab');
+      const proposalParam = params.get('proposalId');
+      const validTabs: NavTab[] = ['ringkasan', 'berita', 'kas', 'notulen', 'usulan', 'agenda'];
+      if (tabParam && validTabs.includes(tabParam as NavTab)) {
+        setPortalRoute('warga');
+        setActiveTab(tabParam as NavTab);
+      }
+      if (proposalParam) {
+        setPortalRoute('warga');
+        setActiveTab('usulan');
+        setSelectedProposalId(proposalParam);
+      }
+    };
+
+    if (window.location.search) {
+      applyDeepLink(window.location.search);
       window.history.replaceState({}, '', window.location.pathname || '/');
     }
+
+    const handleSwMessage = (event: MessageEvent) => {
+      const msg = event.data as { type?: string; url?: string } | undefined;
+      if (msg?.type === 'PORTAL_NAVIGATE' && msg.url) {
+        try {
+          const parsed = new URL(msg.url, window.location.origin);
+          if (parsed.search) {
+            applyDeepLink(parsed.search);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }
+        } catch {
+          // Ignore malformed navigation messages
+        }
+      }
+    };
+
+    navigator.serviceWorker?.addEventListener('message', handleSwMessage);
+    return () => {
+      navigator.serviceWorker?.removeEventListener('message', handleSwMessage);
+    };
   }, []);
 
   useEffect(() => {
@@ -131,11 +158,26 @@ export default function App() {
 
   const unreadCount = state.notifications.filter((n) => !n.read).length;
 
-  const handleInspectProposal = (proposalId: string) => {
-    navigatePortal('warga');
-    setActiveTab('usulan');
-    setSelectedProposalId(proposalId);
-  };
+  const handleOpenNotification = useCallback(
+    (notification: NotificationItem) => {
+      navigatePortal('warga');
+      setNotificationsOpen(false);
+      if (notification.type === 'agenda_new') {
+        setActiveTab('agenda');
+        setSelectedProposalId(null);
+      } else if (notification.type === 'treasury_new') {
+        setActiveTab('kas');
+        setSelectedProposalId(null);
+      } else {
+        setActiveTab('usulan');
+        if (notification.proposalId) {
+          setSelectedProposalId(notification.proposalId);
+        }
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    [navigatePortal]
+  );
 
   const handleProposalSubmitted = (createdId: string) => {
     setProposalFormOpen(false);
@@ -200,14 +242,14 @@ export default function App() {
           connectionState={connectionState}
           onMarkRead={markNotificationRead}
           onMarkAllRead={markAllNotificationsRead}
-          onInspectProposal={handleInspectProposal}
+          onOpenNotification={handleOpenNotification}
           topOffsetClass="top-16"
         />
 
         <LiveToastStack
           toasts={toasts}
           onDismiss={dismissToast}
-          onInspectProposal={handleInspectProposal}
+          onOpenNotification={handleOpenNotification}
         />
       </>
     );
@@ -277,7 +319,11 @@ export default function App() {
                   setActiveTab('berita');
                   window.scrollTo({ top: 0, behavior: 'smooth' });
                 }}
-                onSelectProposal={handleInspectProposal}
+                onSelectProposal={(proposalId) => {
+                  navigatePortal('warga');
+                  setActiveTab('usulan');
+                  setSelectedProposalId(proposalId);
+                }}
                 onOpenProposalForm={() => setProposalFormOpen(true)}
               />
             )}
@@ -426,13 +472,13 @@ export default function App() {
         connectionState={connectionState}
         onMarkRead={markNotificationRead}
         onMarkAllRead={markAllNotificationsRead}
-        onInspectProposal={handleInspectProposal}
+        onOpenNotification={handleOpenNotification}
       />
 
       <LiveToastStack
         toasts={toasts}
         onDismiss={dismissToast}
-        onInspectProposal={handleInspectProposal}
+        onOpenNotification={handleOpenNotification}
       />
     </div>
   );

@@ -5,13 +5,13 @@ import type { NotificationItem } from '../types';
 interface LiveToastStackProps {
   toasts: NotificationItem[];
   onDismiss: (id: string) => void;
-  onInspectProposal: (proposalId: string) => void;
+  onOpenNotification: (notification: NotificationItem) => void;
 }
 
 export function LiveToastStack({
   toasts,
   onDismiss,
-  onInspectProposal,
+  onOpenNotification,
 }: LiveToastStackProps) {
   if (toasts.length === 0) return null;
 
@@ -22,10 +22,30 @@ export function LiveToastStack({
     >
       {toasts.map((toast) => {
         const statusMeta = toast.status ? getStatusMeta(toast.status) : null;
+        const actionLabel =
+          toast.type === 'agenda_new'
+            ? 'Lihat Agenda →'
+            : toast.type === 'treasury_new'
+              ? 'Lihat Laporan Kas →'
+              : 'Pantau Progress →';
+
         return (
           <div
             key={toast.id}
-            className="pointer-events-auto bg-white border border-slate-200 shadow-lg rounded-xl p-4 flex items-start gap-3"
+            onClick={() => {
+              onOpenNotification(toast);
+              onDismiss(toast.id);
+            }}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onOpenNotification(toast);
+                onDismiss(toast.id);
+              }
+            }}
+            className="pointer-events-auto cursor-pointer bg-white hover:bg-slate-50 border border-slate-200 shadow-lg rounded-xl p-4 flex items-start gap-3 transition-colors"
           >
             <div className="p-2 bg-emerald-50 text-emerald-800 rounded-lg shrink-0">
               <Bell className="w-4 h-4" aria-hidden="true" />
@@ -39,7 +59,10 @@ export function LiveToastStack({
                 </span>
                 <button
                   type="button"
-                  onClick={() => onDismiss(toast.id)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDismiss(toast.id);
+                  }}
                   aria-label="Tutup notifikasi"
                   className="text-slate-400 hover:text-slate-700"
                 >
@@ -52,18 +75,9 @@ export function LiveToastStack({
               <p className="mt-0.5 text-xs text-slate-600 line-clamp-2">
                 {toast.message}
               </p>
-              {toast.proposalId && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onInspectProposal(toast.proposalId!);
-                    onDismiss(toast.id);
-                  }}
-                  className="mt-2 text-xs font-semibold text-emerald-800 hover:text-emerald-950"
-                >
-                  Pantau Progress →
-                </button>
-              )}
+              <span className="mt-2 inline-block text-xs font-semibold text-emerald-800">
+                {actionLabel}
+              </span>
             </div>
           </div>
         );

@@ -19,7 +19,7 @@ interface NotificationDrawerProps {
   connectionState: ConnectionState;
   onMarkRead: (id: string) => void;
   onMarkAllRead: () => void;
-  onInspectProposal: (proposalId: string) => void;
+  onOpenNotification: (notification: NotificationItem) => void;
   topOffsetClass?: string;
 }
 
@@ -31,7 +31,7 @@ export function NotificationDrawer({
   connectionState,
   onMarkRead,
   onMarkAllRead,
-  onInspectProposal,
+  onOpenNotification,
   topOffsetClass = 'top-0 md:top-16',
 }: NotificationDrawerProps) {
   const [filter, setFilter] = useState<'all' | 'unread' | 'watched'>('all');
@@ -326,12 +326,35 @@ export function NotificationDrawer({
               const isWatched = Boolean(
                 item.proposalId && watchedProposalIds.includes(item.proposalId)
               );
+              const actionLabel =
+                item.type === 'agenda_new'
+                  ? 'Lihat Agenda Warga →'
+                  : item.type === 'treasury_new'
+                    ? 'Lihat Laporan Kas →'
+                    : 'Lihat Progress Usulan →';
+
+              const handleOpenItem = () => {
+                if (!item.read) onMarkRead(item.id);
+                onOpenNotification(item);
+                onClose();
+              };
 
               return (
                 <div
                   key={item.id}
-                  className={`p-4 transition-colors ${
-                    item.read ? 'bg-white' : 'bg-emerald-50/40'
+                  onClick={handleOpenItem}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleOpenItem();
+                    }
+                  }}
+                  className={`p-4 transition-colors cursor-pointer ${
+                    item.read
+                      ? 'bg-white hover:bg-slate-50'
+                      : 'bg-emerald-50/40 hover:bg-emerald-50/70'
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
@@ -364,26 +387,17 @@ export function NotificationDrawer({
                   </p>
 
                   <div className="mt-2.5 flex items-center justify-between gap-3">
-                    {item.proposalId ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (!item.read) onMarkRead(item.id);
-                          onInspectProposal(item.proposalId!);
-                          onClose();
-                        }}
-                        className="text-xs font-semibold text-emerald-800 hover:text-emerald-950"
-                      >
-                        Lihat Progress Usulan →
-                      </button>
-                    ) : (
-                      <span />
-                    )}
+                    <span className="text-xs font-semibold text-emerald-800">
+                      {actionLabel}
+                    </span>
 
                     {!item.read && (
                       <button
                         type="button"
-                        onClick={() => onMarkRead(item.id)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onMarkRead(item.id);
+                        }}
                         className="text-[11px] font-medium text-slate-500 hover:text-slate-800"
                       >
                         Tandai dibaca
