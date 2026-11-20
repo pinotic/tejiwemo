@@ -36,6 +36,8 @@ export function NotificationDrawer({
 }: NotificationDrawerProps) {
   const [filter, setFilter] = useState<'all' | 'unread' | 'watched'>('all');
   const [pushState, setPushState] = useState<BrowserPushState>('checking');
+  const [serverPushReady, setServerPushReady] = useState(true);
+  const [unsupportedReason, setUnsupportedReason] = useState<string | undefined>(undefined);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushFeedback, setPushFeedback] = useState<string | null>(null);
 
@@ -44,8 +46,12 @@ export function NotificationDrawer({
     let active = true;
     setPushFeedback(null);
     detectBrowserPushState()
-      .then(({ state }) => {
-        if (active) setPushState(state);
+      .then(({ state, serverPushReady: srvReady, unsupportedReason: reason }) => {
+        if (active) {
+          setPushState(state);
+          setServerPushReady(srvReady);
+          setUnsupportedReason(reason);
+        }
       })
       .catch(() => {
         if (active) setPushState('unsupported');
@@ -237,12 +243,19 @@ export function NotificationDrawer({
             )}
 
             {pushState === 'unsupported' && (
-              <div className="flex items-start gap-2 text-[11px] text-slate-500 leading-snug">
+              <div className="flex items-start gap-2 text-[11px] text-slate-600 leading-snug">
                 <BellOff className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-400" aria-hidden="true" />
                 <span>
-                  Browser ini belum mendukung push notifikasi (di iPhone/iPad, tambahkan web ke Layar Utama terlebih dahulu).
+                  {unsupportedReason ||
+                    'Browser ini belum mendukung push notifikasi (di iPhone/iPad, tambahkan web ke Layar Utama terlebih dahulu).'}
                 </span>
               </div>
+            )}
+
+            {!serverPushReady && pushState !== 'unconfigured' && pushState !== 'unsupported' && (
+              <p className="mt-1.5 text-[11px] text-amber-800 leading-snug">
+                Catatan: Server belum terhubung ke Firebase Admin (FIREBASE_SERVICE_ACCOUNT_JSON belum terpasang/valid di Vercel), sehingga push belum dapat dikirim.
+              </p>
             )}
 
             {pushFeedback && (

@@ -1810,6 +1810,9 @@ app.post('/api/push/test-self', async (req, res) => {
       data: {
         type: 'agenda_new',
         url: '/?tab=agenda',
+        forceDisplay: '1',
+        title: 'Tes Notifikasi Portal Warga',
+        body: 'Notifikasi push FCM ke perangkat ini sudah terhubung dengan baik.',
       },
       webpush: {
         headers: {

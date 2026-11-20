@@ -109,19 +109,56 @@ async function getMessagingInstance(config: WebPushConfig): Promise<Messaging | 
 export async function detectBrowserPushState(): Promise<{
   state: BrowserPushState;
   serverPushReady: boolean;
+  unsupportedReason?: string;
 }> {
   const cfg = await fetchPushConfig();
-  if (
-    typeof window === 'undefined' ||
-    !('Notification' in window) ||
-    !('serviceWorker' in navigator)
-  ) {
+  if (typeof window === 'undefined') {
     return { state: 'unsupported', serverPushReady: cfg.serverPushReady };
+  }
+
+  if (!window.isSecureContext) {
+    return {
+      state: 'unsupported',
+      serverPushReady: cfg.serverPushReady,
+      unsupportedReason:
+        'Halaman harus dibuka lewat alamat HTTPS (bukan HTTP biasa) agar notifikasi push dapat aktif.',
+    };
+  }
+
+  if (window.self !== window.top) {
+    return {
+      state: 'unsupported',
+      serverPushReady: cfg.serverPushReady,
+      unsupportedReason:
+        'Portal sedang dibuka di dalam iframe/preview. Buka alamat web langsung di tab Google Chrome.',
+    };
+  }
+
+  const ua = navigator.userAgent || '';
+  const isInAppWebView = /\bwv\b|FBAN|FBAV|Instagram|Line\/|MicroMessenger/i.test(ua);
+
+  if (
+    !('Notification' in window) ||
+    !('serviceWorker' in navigator) ||
+    !('PushManager' in window)
+  ) {
+    return {
+      state: 'unsupported',
+      serverPushReady: cfg.serverPushReady,
+      unsupportedReason: isInAppWebView
+        ? 'Anda membuka link dari browser di dalam aplikasi (misal WhatsApp). Ketuk ikon titik tiga (⋮) di pojok kanan atas lalu pilih "Buka di Chrome".'
+        : 'Browser ini belum mendukung Web Push. Gunakan Google Chrome terbaru di Android/Desktop (atau di iPhone/iPad: Share → Tambah ke Layar Utama).',
+    };
   }
 
   const supported = await isSupported().catch(() => false);
   if (!supported) {
-    return { state: 'unsupported', serverPushReady: cfg.serverPushReady };
+    return {
+      state: 'unsupported',
+      serverPushReady: cfg.serverPushReady,
+      unsupportedReason:
+        'Mode penyamaran (Incognito) atau pengaturan browser memblokir Service Worker / penyimpanan push. Gunakan tab Google Chrome biasa.',
+    };
   }
 
   if (!cfg.webPushReady || !cfg.firebaseConfig || !cfg.vapidKey) {
@@ -190,12 +227,18 @@ export async function subscribeWebPush(): Promise<string> {
   }
 
   localStorage.setItem(FCM_TOKEN_STORAGE_KEY, token);
+  attachForegroundListener(messaging, registration);
   return token;
 }
 
 export async function unsubscribeWebPush(): Promise<void> {
   const savedToken = localStorage.getItem(FCM_TOKEN_STORAGE_KEY);
   const cfg = await fetchPushConfig();
+
+  if (foregroundUnsubscribe) {
+    foregroundUnsubscribe();
+    foregroundUnsubscribe = null;
+  }
 
   if (cfg.firebaseConfig) {
     try {
@@ -219,9 +262,60 @@ export async function unsubscribeWebPush(): Promise<void> {
   localStorage.removeItem(FCM_TOKEN_STORAGE_KEY);
 }
 
+let foregroundUnsubscribe: (() => void) | null = null;
+let foregroundCallback: (() => void) | undefined;
+
+function attachForegroundListener(
+  messaging: Messaging,
+  registration?: ServiceWorkerRegistration
+): () => void {
+  if (foregroundUnsubscribe) {
+    foregroundUnsubscribe();
+    foregroundUnsubscribe = null;
+  }
+  const unsub = onMessage(messaging, async (payload) => {
+    foregroundCallback?.();
+    const shouldShowOsNotif =
+      Notification.permission === 'granted' &&
+      (!document.hasFocus() ||
+        document.visibilityState !== 'visible' ||
+        payload.data?.forceDisplay === '1');
+    if (shouldShowOsNotif) {
+      const title =
+        payload.notification?.title || payload.data?.title || 'Portal Warga RT 01 Dinoyo';
+      const body =
+        payload.notification?.body || payload.data?.body || 'Ada pembaruan baru di Portal Warga.';
+      const icon =
+        '/assets/aistudio/500309821_1300971965363211_2221899409798109426_n__1__55125c15.png';
+      try {
+        const reg = registration || (await navigator.serviceWorker.getRegistration('/'));
+        if (reg) {
+          await reg.showNotification(title, {
+            body,
+            icon,
+            badge: icon,
+            data: payload.data || {},
+          });
+          return;
+        }
+      } catch {
+        // Fallback to Notification constructor below
+      }
+      try {
+        new Notification(title, { body, icon });
+      } catch {
+        // Ignore on platforms where Notification constructor is restricted
+      }
+    }
+  });
+  foregroundUnsubscribe = unsub;
+  return unsub;
+}
+
 export async function syncExistingWebPushSubscription(
   onForegroundMessage?: () => void
 ): Promise<() => void> {
+  foregroundCallback = onForegroundMessage;
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return () => {};
   }
@@ -240,10 +334,13 @@ export async function syncExistingWebPushSubscription(
   const messaging = await getMessagingInstance(cfg.firebaseConfig);
   if (!messaging) return () => {};
 
+  let activeRegistration: ServiceWorkerRegistration | undefined;
   try {
     const registration = await navigator.serviceWorker.register('/api/push/sw', {
       scope: '/',
     });
+    await registration.update().catch(() => undefined);
+    activeRegistration = registration;
     const freshToken = await getToken(messaging, {
       vapidKey: cfg.vapidKey,
       serviceWorkerRegistration: registration,
@@ -261,9 +358,7 @@ export async function syncExistingWebPushSubscription(
     // Non-fatal background refresh error
   }
 
-  return onMessage(messaging, () => {
-    onForegroundMessage?.();
-  });
+  return attachForegroundListener(messaging, activeRegistration);
 }
 
 export async function sendSelfTestPush(): Promise<void> {
